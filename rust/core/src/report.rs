@@ -208,7 +208,11 @@ pub fn build(file: &str, model: &Model, ctx: &Ctx, ev: &Eval) -> Report {
     }
     findings.sort_by(|a, b| (a.severity != "fail", &a.region, &a.code).cmp(&(b.severity != "fail", &b.region, &b.code)));
     regions.sort_by(|a, b| a.score.partial_cmp(&b.score).unwrap().then(a.name.cmp(&b.name)));
-    let total_e: f64 = ev.energy.iter().sum::<f64>() / model.nverts().max(1) as f64;
+    // Half the vertex mean, half the worst region: one broken limb or piece
+    // must pull the score down even on a big mesh.
+    let mean_e: f64 = ev.energy.iter().sum::<f64>() / model.nverts().max(1) as f64;
+    let worst_e = energies.iter().cloned().fold(0.0, f64::max);
+    let total_e = 0.5 * mean_e + 0.5 * worst_e;
     let mut worst_poses: Vec<PoseReport> =
         ev.pose_bad.iter().enumerate().map(|(i, &b)| PoseReport { pose: ctx.poses[i].name.clone(), bad: b }).collect();
     worst_poses.sort_by(|a, b| b.bad.cmp(&a.bad).then(a.pose.cmp(&b.pose)));
@@ -247,4 +251,30 @@ pub fn text(r: &Report) -> String {
         }
     }
     s
+}
+
+/// Per-vertex flags that belong to a reported finding (fail or warn), so a
+/// sheet paints exactly what the report says and nothing below the
+/// region threshold.
+pub fn finding_mask(ctx: &Ctx, ev: &Eval, rep: &Report) -> Vec<u8> {
+    let bit_of = |code: &str| -> u8 {
+        match code {
+            "D_STRETCH" => F_STRETCH,
+            "D_VOLUME" => F_THIN,
+            "D_BLEED" => F_BLEED,
+            "D_NOISE" => F_NOISE,
+            "D_INTERSECT" => F_INTERSECT,
+            "D_UNWEIGHTED" => F_UNWEIGHTED,
+            "D_PIECE_BONES" => F_PIECE,
+            "D_PIECE_FOLLOW" => F_FOLLOW,
+            _ => 0,
+        }
+    };
+    let mut allowed: BTreeMap<&str, u8> = BTreeMap::new();
+    for f in &rep.findings {
+        *allowed.entry(f.region.as_str()).or_default() |= bit_of(&f.code);
+    }
+    (0..ev.flags.len())
+        .map(|v| ev.flags[v] & allowed.get(ctx.regions[ctx.vregion[v] as usize].name.as_str()).copied().unwrap_or(0))
+        .collect()
 }

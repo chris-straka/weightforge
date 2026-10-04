@@ -213,6 +213,8 @@ pub struct Eval {
     pub energy: Vec<f64>,
     /// Pose index where each vertex was worst (for the sheet).
     pub worst_pose: Vec<u32>,
+    /// Per pose: vertices with a failing flag (self-intersection, a
+    /// warning, not counted).
     pub pose_bad: Vec<usize>,
     /// Per pose: (vertex, flags) of every vertex that is bad in that pose.
     pub bad_in_pose: Vec<Vec<(u32, u8)>>,
@@ -410,6 +412,7 @@ pub fn evaluate(model: &Model, ctx: &Ctx, w: &Weights) -> Eval {
 
     let mut flags = vec![0u8; nv];
     let mut energy = vec![0.0f64; nv];
+    let mut pose_max = vec![0.0f64; nv];
     let mut worst_pose = vec![0u32; nv];
     let mut worst_val = vec![0.0f64; nv];
     let mut pose_bad = vec![0usize; ctx.poses.len()];
@@ -417,6 +420,24 @@ pub fn evaluate(model: &Model, ctx: &Ctx, w: &Weights) -> Eval {
     let mut max_stretch = vec![1.0f64; nv];
     let mut min_thin = vec![1.0f64; nv];
     let np = ctx.poses.len().max(1) as f64;
+    // The attached vertices carry the whole piece: their drift energy is
+    // scaled by piece size / attached count, so a torn-off cape costs like
+    // a cape, not like nine vertices.
+    let mut attach_scale = vec![0.0f64; nv];
+    {
+        let mut piece_n = vec![0usize; model.parts.len()];
+        let mut att_n = vec![0usize; model.parts.len()];
+        for v in 0..nv {
+            piece_n[model.vpart[v] as usize] += 1;
+        }
+        for m in ctx.piece_matches.iter().filter(|m| m.3) {
+            att_n[model.vpart[m.0 as usize] as usize] += 1;
+        }
+        for m in ctx.piece_matches.iter().filter(|m| m.3) {
+            let p = model.vpart[m.0 as usize] as usize;
+            attach_scale[m.0 as usize] = piece_n[p] as f64 / att_n[p].max(1) as f64;
+        }
+    }
     // Limb radius per region: median rest thickness.
     let nr = ctx.regions.len();
     let mut radius = vec![0.0f64; nr];
@@ -480,11 +501,18 @@ pub fn evaluate(model: &Model, ctx: &Ctx, w: &Weights) -> Eval {
             if po.follow[v] > th.follow {
                 f |= F_FOLLOW;
             }
-            let e = (s - 1.25).max(0.0)
-                + 2.0 * (0.8 - t).max(0.0)
-                + if po.isect[v] { 0.25 } else { 0.0 }
-                + 4.0 * (po.follow[v] - 0.02).max(0.0);
-            energy[v] += e / np;
+            // Soft costs: little for what clean LBS does anyway (moderate
+            // stretch, the crushed joint ring, folds), a lot for tears,
+            // long collapses, and pieces leaving the body.
+            let e = (s - 1.6).max(0.0)
+                + 2.0 * (0.5 - t).max(0.0)
+                + if thin_ok[v] { 0.5 + 2.0 * (th.thin - t).max(0.0) } else { 0.0 }
+                + if po.isect[v] { 0.05 } else { 0.0 }
+                + 20.0 * (po.follow[v] - 0.03).max(0.0) * attach_scale[v];
+            // Half the pose mean, half the worst pose: a tear that shows in
+            // one pose of thirty-five still counts.
+            energy[v] += 0.5 * e / np;
+            pose_max[v] = pose_max[v].max(e);
             let badness = (s - th.stretch).max(0.0)
                 + (th.thin - t).max(0.0)
                 + (po.follow[v] - th.follow).max(0.0)
@@ -493,12 +521,17 @@ pub fn evaluate(model: &Model, ctx: &Ctx, w: &Weights) -> Eval {
                 worst_val[v] = badness;
                 worst_pose[v] = p as u32;
             }
-            if f != 0 {
+            if f & !F_INTERSECT != 0 {
                 pose_bad[p] += 1;
+            }
+            if f != 0 {
                 bad_in_pose[p].push((v as u32, f));
             }
             flags[v] |= f;
         }
+    }
+    for v in 0..nv {
+        energy[v] += 0.5 * pose_max[v];
     }
     let bleed: Vec<Option<(u32, f64, f64)>> = (0..nv).into_par_iter().map(|v| bleed_of(ctx, model, w, v)).collect();
     let noise: Vec<f64> = (0..nv).into_par_iter().map(|v| noise_of(model, w, v)).collect();
@@ -512,7 +545,7 @@ pub fn evaluate(model: &Model, ctx: &Ctx, w: &Weights) -> Eval {
         if w[v].is_empty() {
             flags[v] |= F_UNWEIGHTED;
         }
-        energy[v] += bleed_energy(ctx, model, w, v) + 2.0 * (noise[v] - 0.1).max(0.0) + if w[v].is_empty() { 1.0 } else { 0.0 };
+        energy[v] += bleed_energy(ctx, model, w, v) + 2.0 * (noise[v] - 0.3).max(0.0) + if w[v].is_empty() { 1.0 } else { 0.0 };
     }
     let pb = piece_bones(model, w);
     for (_, _, verts) in &pb {

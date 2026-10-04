@@ -12,6 +12,8 @@ weights — skin-weight QA and repair for rigged GLB characters
 
 USAGE:
   weights check   <in.glb> [--poses rom.ron] [--json] [--no-clips] [--voxels N]
+  weights sheet   <in.glb> --out sheet.png [--poses rom.ron] [--cols N]
+  weights compare <a.glb> <b.glb> --out ab.png [--poses rom.ron]
   weights fixture <fault|all> --out <dir>
 
 COMMON OPTIONS:
@@ -28,7 +30,7 @@ struct Args {
     flags: Vec<(String, Option<String>)>,
 }
 
-const VALUED: &[&str] = &["--poses", "--voxels", "--out"];
+const VALUED: &[&str] = &["--poses", "--voxels", "--out", "--cols"];
 
 impl Args {
     fn parse(raw: Vec<String>) -> Result<Args, String> {
@@ -105,6 +107,87 @@ fn cmd_check(a: &Args) -> ExitCode {
     if rep.pass { ExitCode::SUCCESS } else { ExitCode::from(1) }
 }
 
+fn fails(r: &wf::report::Report) -> usize {
+    r.findings.iter().filter(|f| f.severity == "fail").count()
+}
+
+fn write_png(out: &str, img: &wf::render::Image) -> Result<(), String> {
+    std::fs::write(out, img.png_bytes()).map_err(|e| format!("{out}: {e}"))
+}
+
+fn cmd_sheet(a: &Args) -> ExitCode {
+    let Some(input) = a.pos.get(1) else { return fail("sheet needs an input .glb") };
+    let Some(out) = a.get("--out") else { return fail("sheet needs --out <file.png>") };
+    let set = match load_poses(a) {
+        Ok(s) => s,
+        Err(e) => return fail(e),
+    };
+    let opts = match ctx_opts(a, set.as_ref()) {
+        Ok(o) => o,
+        Err(e) => return fail(e),
+    };
+    let (model, ctx, ev, rep) = match wf::check(Path::new(input), &opts) {
+        Ok(x) => x,
+        Err(e) => return fail(e),
+    };
+    let mut so = wf::render::SheetOpts::default();
+    if let Some(c) = a.get("--cols") {
+        match c.parse::<usize>() {
+            Ok(n) if (1..=8).contains(&n) => so.cols = n,
+            _ => return fail("--cols must be 1..8"),
+        }
+    }
+    let mask = wf::report::finding_mask(&ctx, &ev, &rep);
+    let info = wf::render::SheetInfo { title: &rep.file, mask: &mask, score: rep.score, pass: rep.pass, fails: fails(&rep) };
+    let img = wf::render::sheet(&model, &ctx, &ev, &model.weights, &info, &so);
+    if let Err(e) = write_png(out, &img) {
+        return fail(e);
+    }
+    println!("{out}");
+    if rep.pass { ExitCode::SUCCESS } else { ExitCode::from(1) }
+}
+
+fn cmd_compare(a: &Args) -> ExitCode {
+    let (Some(pa), Some(pb)) = (a.pos.get(1), a.pos.get(2)) else { return fail("compare needs two .glb files") };
+    let Some(out) = a.get("--out") else { return fail("compare needs --out <file.png>") };
+    let set = match load_poses(a) {
+        Ok(s) => s,
+        Err(e) => return fail(e),
+    };
+    let opts = match ctx_opts(a, set.as_ref()) {
+        Ok(o) => o,
+        Err(e) => return fail(e),
+    };
+    let ra = wf::check(Path::new(pa), &opts);
+    let rb = wf::check(Path::new(pb), &opts);
+    let ((ma, ca, ea, rpa), (mb, cb, eb, rpb)) = match (ra, rb) {
+        (Ok(x), Ok(y)) => (x, y),
+        (Err(e), _) | (_, Err(e)) => return fail(e),
+    };
+    let mask_a = wf::report::finding_mask(&ca, &ea, &rpa);
+    let mask_b = wf::report::finding_mask(&cb, &eb, &rpb);
+    let sa = wf::render::Side {
+        model: &ma,
+        ctx: &ca,
+        ev: &ea,
+        w: &ma.weights,
+        info: wf::render::SheetInfo { title: &rpa.file, mask: &mask_a, score: rpa.score, pass: rpa.pass, fails: fails(&rpa) },
+    };
+    let sb = wf::render::Side {
+        model: &mb,
+        ctx: &cb,
+        ev: &eb,
+        w: &mb.weights,
+        info: wf::render::SheetInfo { title: &rpb.file, mask: &mask_b, score: rpb.score, pass: rpb.pass, fails: fails(&rpb) },
+    };
+    let img = wf::render::compare(&sa, &sb, &wf::render::SheetOpts::default());
+    if let Err(e) = write_png(out, &img) {
+        return fail(e);
+    }
+    println!("{out}");
+    ExitCode::SUCCESS
+}
+
 fn cmd_fixture(a: &Args) -> ExitCode {
     let Some(which) = a.pos.get(1) else { return fail("fixture needs a fault name or `all`") };
     let Some(out) = a.get("--out") else { return fail("fixture needs --out <dir>") };
@@ -145,6 +228,8 @@ fn main() -> ExitCode {
     };
     match a.pos[0].as_str() {
         "check" => cmd_check(&a),
+        "sheet" => cmd_sheet(&a),
+        "compare" => cmd_compare(&a),
         "fixture" => cmd_fixture(&a),
         other => fail(format!("unknown command {other} (try --help)")),
     }

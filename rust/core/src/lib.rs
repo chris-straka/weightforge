@@ -7,10 +7,12 @@
 //! and keeps the best per region.
 
 pub mod fixtures;
+pub mod font;
 pub mod glb;
 pub mod math;
 pub mod metrics;
 pub mod poses;
+pub mod render;
 pub mod report;
 pub mod scene;
 pub mod skin;

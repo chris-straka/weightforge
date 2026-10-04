@@ -67,3 +67,12 @@ fn every_fixture_listed_is_tested() {
         assert!(*f == "clean" || CASES.iter().any(|c| c.0 == *f), "fixture {f} has no gate case");
     }
 }
+
+#[test]
+fn every_fault_scores_below_the_clean_twin() {
+    let clean = report("clean").score;
+    for (fault, _, _) in CASES {
+        let s = report(fault).score;
+        assert!(s < clean - 5.0, "{fault}: score {s} not clearly below clean {clean}");
+    }
+}

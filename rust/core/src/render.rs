@@ -255,12 +255,27 @@ fn masked_pose_bad(ev: &Eval, mask: &[u8]) -> Vec<usize> {
     ev.bad_in_pose.iter().map(|l| l.iter().filter(|(v, f)| f & mask[*v as usize] & !F_INTERSECT != 0).count()).collect()
 }
 
-/// Worst poses first (most bad vertices), then ROM order to fill the sheet.
+/// Worst poses first (most bad vertices), at most two per moved bone so
+/// one bad joint does not fill the sheet, then ROM order to fill it.
 pub fn pick_poses(ctx: &Ctx, bad: &[usize], max: usize) -> Vec<usize> {
     let mut idx: Vec<usize> = (0..ctx.poses.len()).collect();
     idx.sort_by(|&a, &b| bad[b].cmp(&bad[a]).then(a.cmp(&b)));
-    idx.truncate(max);
-    idx
+    let key = |p: usize| ctx.poses[p].moves.first().map(|m| m.0 as i64).unwrap_or(-1 - p as i64);
+    let mut per: std::collections::BTreeMap<i64, usize> = std::collections::BTreeMap::new();
+    let mut out = Vec::new();
+    let mut rest = Vec::new();
+    for p in idx {
+        let c = per.entry(key(p)).or_default();
+        if *c < 2 {
+            *c += 1;
+            out.push(p);
+        } else {
+            rest.push(p);
+        }
+    }
+    out.extend(rest);
+    out.truncate(max);
+    out
 }
 
 fn posed(model: &Model, ctx: &Ctx, p: Option<usize>, w: &Weights) -> Vec<Vec3> {

@@ -373,17 +373,34 @@ pub fn resolve(set: &PoseSet, sk: &Skeleton) -> Vec<Pose> {
 /// non-root bone bends ±45° about two axes and twists ±45°.
 pub fn generic(model: &Model) -> Vec<Pose> {
     let sk = &model.skel;
+    // A bone is worth posing if it carries weight, or if it owns geometry
+    // (nearest bone to >= 1% of vertices) even when the weights ignore it
+    // (a rig with everything on the root must still be exercised).
     let mut used = vec![0usize; sk.joints.len()];
     for vw in &model.weights {
-        if let Some(&(j, w)) = vw.first() {
-            if w > 0.3 {
+        for &(j, w) in vw {
+            if w > 0.05 {
                 used[j as usize] += 1;
             }
         }
     }
+    let mut territory = vec![0usize; sk.joints.len()];
+    for p in &model.rest {
+        let j = (0..sk.joints.len()).min_by(|&a, &b| sk.seg_dist(a, *p).partial_cmp(&sk.seg_dist(b, *p)).unwrap()).unwrap_or(0);
+        territory[j] += 1;
+    }
+    let min_t = (model.nverts() / 100).max(1);
+    for j in 0..sk.joints.len() {
+        if territory[j] >= min_t {
+            used[j] += 1;
+        }
+    }
     let mut out = Vec::new();
     for j in 0..sk.joints.len() {
-        if sk.jparent[j].is_none() || used[j] == 0 && sk.jchildren[j].iter().all(|&c| used[c] == 0) {
+        // A hierarchy root moves everything rigidly (nothing to learn); a
+        // childless root in a flat skeleton is a real deforming bone.
+        let hierarchy_root = sk.jparent[j].is_none() && !sk.jchildren[j].is_empty();
+        if hierarchy_root || used[j] == 0 && sk.jchildren[j].iter().all(|&c| used[c] == 0) {
             continue;
         }
         let d = bone_dir(sk, j);

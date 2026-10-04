@@ -288,6 +288,18 @@ fn posed(model: &Model, ctx: &Ctx, p: Option<usize>, w: &Weights) -> Vec<Vec3> {
     }
 }
 
+/// Shortens `s` to `max` glyphs by cutting the middle ("LONG_NA..E.GLB").
+pub fn fit_text(s: &str, max: usize) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() <= max || max < 5 {
+        return s.to_string();
+    }
+    let keep = max - 2;
+    let head = keep / 2;
+    let tail = keep - head;
+    chars[..head].iter().chain(['.', '.'].iter()).chain(chars[chars.len() - tail..].iter()).collect()
+}
+
 fn verdict_line(score: f64, pass: bool, fails: usize) -> (String, [u8; 3]) {
     if pass { (format!("SCORE {score:.1}/100  PASS"), GREEN) } else { (format!("SCORE {score:.1}/100  FAIL  {fails} FINDINGS"), RED) }
 }
@@ -312,7 +324,8 @@ pub fn sheet(model: &Model, ctx: &Ctx, ev: &Eval, w: &Weights, info: &SheetInfo,
     let f = fit(&o.view, &refs, o.cell_w, o.cell_h - LABEL);
     let rows = cells.len().div_ceil(o.cols);
     let mut img = Image::new(o.cols * o.cell_w, HEADER + rows * o.cell_h, BG);
-    img.text(16, 14, &format!("WEIGHTFORGE  {}", info.title), 3, FG);
+    let title_cols = (o.cols * o.cell_w).saturating_sub(32) / 18;
+    img.text(16, 14, &fit_text(&format!("WEIGHTFORGE  {}", info.title), title_cols), 3, FG);
     let (line, col) = verdict_line(info.score, info.pass, info.fails);
     img.text(16, 50, &line, 3, col);
     let legend = "RED = BAD IN THAT POSE";
@@ -369,12 +382,18 @@ pub fn compare(a: &Side, b: &Side, o: &SheetOpts) -> Image {
     let f = fit(&o.view, &refs, o.cell_w, o.cell_h - LABEL);
     let header = HEADER + 40;
     let mut img = Image::new(2 * o.cell_w, header + rows.len() * o.cell_h, BG);
+    // Each side's header must fit its own column (12 px per glyph at scale 2).
+    let cols = (o.cell_w.saturating_sub(60)) / 12;
     for (k, side) in [a, b].iter().enumerate() {
         let x = 12 + k * o.cell_w;
         img.text(x, 12, if k == 0 { "A" } else { "B" }, 4, FG);
-        img.text(x + 36, 18, side.info.title, 2, FG);
-        let (line, col) = verdict_line(side.info.score, side.info.pass, side.info.fails);
-        img.text(x, 56, &line, 2, col);
+        img.text(x + 36, 18, &fit_text(side.info.title, cols), 2, FG);
+        let (line, col) = if side.info.pass {
+            (format!("{:.1}/100 PASS", side.info.score), GREEN)
+        } else {
+            (format!("{:.1}/100 FAIL ({})", side.info.score, side.info.fails), RED)
+        };
+        img.text(x, 56, &fit_text(&line, cols + 3), 2, col);
     }
     img.text(12, HEADER + 8, "SAME POSES. RED = BAD, ORANGE = PASSES THROUGH", 2, DIM);
     for (r, (pa, pb)) in rows.iter().enumerate() {

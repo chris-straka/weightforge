@@ -1,0 +1,11 @@
+# Rust
+rust/target/
+# Blender
+*.blend1
+__pycache__/
+# Local runs: real assets and their outputs never get committed
+bench/models/
+bench/results/
+out/
+*.report.json
+!tests/fixtures/**

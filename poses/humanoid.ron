@@ -1,0 +1,79 @@
+// weightforge humanoid range-of-motion set.
+//
+// Bones are roles (resolved from Rigify DEF-, Mixamo, Unreal, or plain
+// names) or exact bone names. `mirror: true` emits `<name>.L` and
+// `<name>.R`. Bend(dir, degrees) turns the bone toward a character
+// direction (Up, Down, Forward, Back, Left, Right, Out, In); Twist(degrees)
+// turns it about its own axis. `spine*` spreads its angle over the chain.
+// Frame defaults to glTF: +Y up, +Z forward.
+PoseSet(
+    name: "humanoid",
+    poses: [
+        PoseSpec(name: "arm_up", mirror: true, moves: [
+            Move(bone: "upper_arm.L", motion: Bend(Up, 70)),
+        ]),
+        PoseSpec(name: "arm_forward", mirror: true, moves: [
+            Move(bone: "upper_arm.L", motion: Bend(Forward, 80)),
+        ]),
+        PoseSpec(name: "arm_back", mirror: true, moves: [
+            Move(bone: "upper_arm.L", motion: Bend(Back, 40)),
+        ]),
+        PoseSpec(name: "shrug", mirror: true, moves: [
+            Move(bone: "shoulder.L", motion: Bend(Up, 20)),
+        ]),
+        PoseSpec(name: "elbow_140", mirror: true, moves: [
+            Move(bone: "forearm.L", motion: Bend(Forward, 140)),
+        ]),
+        PoseSpec(name: "wrist_twist", mirror: true, moves: [
+            Move(bone: "hand.L", motion: Twist(80)),
+        ]),
+        PoseSpec(name: "wrist_bend", mirror: true, moves: [
+            Move(bone: "hand.L", motion: Bend(Down, 60)),
+        ]),
+        PoseSpec(name: "finger_curl", mirror: true, moves: [
+            Move(bone: "fingers.L", motion: Bend(Down, 60)),
+        ]),
+        PoseSpec(name: "hip_forward", mirror: true, moves: [
+            Move(bone: "thigh.L", motion: Bend(Forward, 90)),
+        ]),
+        PoseSpec(name: "hip_out", mirror: true, moves: [
+            Move(bone: "thigh.L", motion: Bend(Out, 45)),
+        ]),
+        PoseSpec(name: "hip_back", mirror: true, moves: [
+            Move(bone: "thigh.L", motion: Bend(Back, 30)),
+        ]),
+        PoseSpec(name: "knee_140", mirror: true, moves: [
+            Move(bone: "shin.L", motion: Bend(Back, 140)),
+        ]),
+        PoseSpec(name: "ankle_twist", mirror: true, moves: [
+            Move(bone: "foot.L", motion: Twist(40)),
+        ]),
+        PoseSpec(name: "ankle_up", mirror: true, moves: [
+            Move(bone: "foot.L", motion: Bend(Up, 30)),
+        ]),
+        PoseSpec(name: "spine_forward", moves: [
+            Move(bone: "spine*", motion: Bend(Forward, 45)),
+        ]),
+        PoseSpec(name: "spine_back", moves: [
+            Move(bone: "spine*", motion: Bend(Back, 25)),
+        ]),
+        PoseSpec(name: "spine_side", mirror: true, moves: [
+            Move(bone: "spine*", motion: Bend(Left, 30)),
+        ]),
+        PoseSpec(name: "spine_twist", moves: [
+            Move(bone: "spine*", motion: Twist(40)),
+        ]),
+        PoseSpec(name: "head_turn", mirror: true, moves: [
+            Move(bone: "neck", motion: Twist(35)),
+            Move(bone: "head", motion: Twist(35)),
+        ]),
+        PoseSpec(name: "head_nod", moves: [
+            Move(bone: "neck", motion: Bend(Forward, 20)),
+            Move(bone: "head", motion: Bend(Forward, 20)),
+        ]),
+        PoseSpec(name: "head_back", moves: [
+            Move(bone: "neck", motion: Bend(Back, 20)),
+            Move(bone: "head", motion: Bend(Back, 20)),
+        ]),
+    ],
+)

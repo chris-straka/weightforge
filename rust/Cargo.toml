@@ -1,0 +1,21 @@
+[workspace]
+members = ["core", "cli"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+ron = "0.12"
+png = "0.18"
+rayon = "1"
+
+[profile.release]
+debug = false
+
+[profile.test]
+opt-level = 3

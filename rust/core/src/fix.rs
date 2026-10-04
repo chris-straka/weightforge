@@ -4,8 +4,8 @@
 //! region (the input is always candidate 0).
 
 use crate::math::Vec3;
-use crate::metrics::{Ctx, Eval, evaluate, evaluate_with};
-use crate::report::{Report, build, region_energy};
+use crate::metrics::{Ctx, Eval, evaluate, evaluate_partial, evaluate_with};
+use crate::report::{Report, build, region_energy, region_energy_of};
 use crate::scene::{Model, VW, Weights, normalize_vw, prune_vw, sort_vw, weight_of};
 use crate::skin::dqs;
 use crate::transfer::{TriIndex, inpaint_from_matches, match_subset};
@@ -668,6 +668,26 @@ pub fn fix(file: &str, model: &Model, ctx: &Ctx, o: &FixOpts) -> FixResult {
     // Isolated flags (a stray vertex or two) do not open an area for change.
     let flagged = drop_small_clusters(model, &flagged, ctx.th.region_min_bad);
     let active = dilate(model, &flagged, 6);
+    // Incremental trial scoring: only regions touching a changed vertex (or
+    // its one-ring) are re-evaluated; every other vertex keeps its cached
+    // energy. Exact, because a vertex's energy depends only on its own
+    // region and its neighbors.
+    let score_trial = |wt: &Weights, base: &Weights, base_v: &[f64]| -> (Vec<f64>, Vec<f64>) {
+        let mut dirty_r = vec![false; ctx.regions.len()];
+        for v in 0..model.nverts() {
+            if wt[v] != base[v] {
+                dirty_r[ctx.vregion[v] as usize] = true;
+                for &u in &model.adj[v] {
+                    dirty_r[ctx.vregion[u as usize] as usize] = true;
+                }
+            }
+        }
+        let mask: Vec<bool> = (0..model.nverts()).map(|v| dirty_r[ctx.vregion[v] as usize]).collect();
+        let part = evaluate_partial(model, ctx, wt, &mask);
+        let e: Vec<f64> = (0..model.nverts()).map(|v| if mask[v] { part.energy[v] } else { base_v[v] }).collect();
+        let re = region_energy_of(ctx, &e);
+        (e, re)
+    };
     let mut cands: Vec<Candidate> = Vec::new();
     // Candidates are scored as they will be applied: only on the active
     // area (seam-blended), the input everywhere else.
@@ -709,6 +729,8 @@ pub fn fix(file: &str, model: &Model, ctx: &Ctx, o: &FixOpts) -> FixResult {
     }
 
     let orig_e = cands[0].region_e.clone();
+    let orig_v = evaluate_with(model, ctx, &model.weights, false).energy;
+    let mut cur_v = orig_v.clone();
     let mut choice = vec![0usize; nr];
     let mut w = model.weights.clone();
     let mut cur_e = orig_e.clone();
@@ -729,7 +751,7 @@ pub fn fix(file: &str, model: &Model, ctx: &Ctx, o: &FixOpts) -> FixResult {
     // neighbor is repaired (seams); the total must still drop.
     let slack = std::cell::Cell::new(0.01);
     let tolerated = |k: usize| orig_e[k] * 1.1 + slack.get();
-    let greedy = |cands: &[Candidate], choice: &mut Vec<usize>, w: &mut Weights, cur_e: &mut Vec<f64>| {
+    let greedy = |cands: &[Candidate], choice: &mut Vec<usize>, w: &mut Weights, cur_e: &mut Vec<f64>, cur_v: &mut Vec<f64>| {
         let change: Vec<Vec<f64>> = cands
             .iter()
             .map(|c| {
@@ -773,14 +795,14 @@ pub fn fix(file: &str, model: &Model, ctx: &Ctx, o: &FixOpts) -> FixResult {
                     sets.push(&near_all[..]);
                 }
                 // Best valid region set for this candidate.
-                let mut best: Option<(f64, Vec<usize>, Weights, Vec<f64>)> = None;
+                let mut best: Option<(f64, Vec<usize>, Weights, Vec<f64>, Vec<f64>)> = None;
                 for members in sets {
                     let mut trial = choice.clone();
                     for &k in members {
                         trial[k] = c;
                     }
                     let wt = blend(model, ctx, cands, &trial, &active, 3);
-                    let (_, re) = score(&wt);
+                    let (ev_t, re) = score_trial(&wt, w, cur_v);
                     let total: f64 = re.iter().sum();
                     let total_ok = total < cur_e.iter().sum::<f64>() - 1e-9;
                     let none_worse = (0..nr).all(|k| re[k] <= tolerated(k));
@@ -798,19 +820,20 @@ pub fn fix(file: &str, model: &Model, ctx: &Ctx, o: &FixOpts) -> FixResult {
                     // Only real repairs, no polishing of what already works.
                     let meaningful = re[r] < cur_e[r] - (0.2 * cur_e[r]).max(0.005);
                     if total_ok && none_worse && meaningful && best.as_ref().is_none_or(|b| total < b.0) {
-                        best = Some((total, trial, wt, re));
+                        best = Some((total, trial, wt, re, ev_t));
                     }
                 }
-                if let Some((_, trial, wt, re)) = best {
+                if let Some((_, trial, wt, re, ev_t)) = best {
                     *choice = trial;
                     *w = wt;
                     *cur_e = re;
+                    *cur_v = ev_t;
                     break;
                 }
             }
         }
     };
-    greedy(&cands, &mut choice, &mut w, &mut cur_e);
+    greedy(&cands, &mut choice, &mut w, &mut cur_e, &mut cur_v);
 
     // Method 4 starts from the best mix so far, then gets its own pass.
     if o.methods.contains(&Method::Optimize) {
@@ -818,7 +841,7 @@ pub fn fix(file: &str, model: &Model, ctx: &Ctx, o: &FixOpts) -> FixResult {
         let opt = optimize(model, ctx, &w, &ev_mix);
         push("optimize".into(), opt, &mut cands);
         // Re-anchor: blends now combine the chosen candidates with optimize.
-        greedy(&cands, &mut choice, &mut w, &mut cur_e);
+        greedy(&cands, &mut choice, &mut w, &mut cur_e, &mut cur_v);
     }
 
     let mut ev = evaluate(model, ctx, &w);
@@ -832,7 +855,8 @@ pub fn fix(file: &str, model: &Model, ctx: &Ctx, o: &FixOpts) -> FixResult {
         choice = vec![0; nr];
         w = model.weights.clone();
         cur_e = orig_e.clone();
-        greedy(&cands, &mut choice, &mut w, &mut cur_e);
+        cur_v = orig_v.clone();
+        greedy(&cands, &mut choice, &mut w, &mut cur_e, &mut cur_v);
         ev = evaluate(model, ctx, &w);
         rep1 = build(file, model, ctx, &ev);
     }

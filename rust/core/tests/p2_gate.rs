@@ -109,3 +109,28 @@ fn rfcheck() -> Option<std::path::PathBuf> {
         .then_some(p)
         .or_else(|| std::process::Command::new("rfcheck").arg("--help").output().ok().map(|_| std::path::PathBuf::from("rfcheck")))
 }
+
+#[test]
+fn partial_evaluation_matches_full() {
+    use weightforge_core::metrics::{evaluate_partial, evaluate_with};
+    let (m, _) = model_of("bleed");
+    let ctx = Ctx::new(&m, &CtxOpts::default());
+    // Perturb the left arm and score its regions partially.
+    let mut w = m.weights.clone();
+    let regions: Vec<u32> =
+        ctx.regions.iter().enumerate().filter(|(_, r)| r.name.ends_with(".L") && r.name.contains("arm")).map(|(i, _)| i as u32).collect();
+    let mask: Vec<bool> = (0..m.nverts()).map(|v| regions.contains(&ctx.vregion[v])).collect();
+    for v in 0..m.nverts() {
+        if mask[v] && v % 7 == 0 {
+            w[v] = vec![(0, 1.0)];
+        }
+    }
+    let full = evaluate_with(&m, &ctx, &w, false);
+    let part = evaluate_partial(&m, &ctx, &w, &mask);
+    for v in 0..m.nverts() {
+        if mask[v] {
+            assert!((full.energy[v] - part.energy[v]).abs() < 1e-12, "vertex {v}: {} vs {}", full.energy[v], part.energy[v]);
+            assert_eq!(full.flags[v], part.flags[v]);
+        }
+    }
+}

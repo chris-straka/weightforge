@@ -72,10 +72,15 @@ fn code_for(flag: u8) -> (&'static str, &'static str) {
 }
 
 pub fn region_energy(ctx: &Ctx, ev: &Eval) -> Vec<f64> {
+    region_energy_of(ctx, &ev.energy)
+}
+
+/// Mean per-vertex energy of each region.
+pub fn region_energy_of(ctx: &Ctx, energy: &[f64]) -> Vec<f64> {
     let mut sum = vec![0.0; ctx.regions.len()];
     let mut cnt = vec![0usize; ctx.regions.len()];
     for (v, &r) in ctx.vregion.iter().enumerate() {
-        sum[r as usize] += ev.energy[v];
+        sum[r as usize] += energy[v];
         cnt[r as usize] += 1;
     }
     sum.iter().zip(&cnt).map(|(s, &c)| if c > 0 { s / c as f64 } else { 0.0 }).collect()

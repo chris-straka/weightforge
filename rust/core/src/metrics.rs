@@ -336,7 +336,34 @@ pub fn evaluate(model: &Model, ctx: &Ctx, w: &Weights) -> Eval {
 /// Like `evaluate`, choosing whether to run the (slow) self-intersection
 /// test; `fix` scores candidates without it.
 pub fn evaluate_with(model: &Model, ctx: &Ctx, w: &Weights, intersect: bool) -> Eval {
+    evaluate_inner(model, ctx, w, intersect, None)
+}
+
+/// Evaluates only the vertices in `mask`, which must be closed over regions
+/// (whole regions in or out). Energies and flags outside the mask are 0;
+/// inside they equal a full evaluation without self-intersection. `fix`
+/// uses it to re-score just the regions a trial touches.
+pub fn evaluate_partial(model: &Model, ctx: &Ctx, w: &Weights, mask: &[bool]) -> Eval {
+    evaluate_inner(model, ctx, w, false, Some(mask))
+}
+
+fn evaluate_inner(model: &Model, ctx: &Ctx, w: &Weights, intersect: bool, only: Option<&[bool]>) -> Eval {
     let nv = model.nverts();
+    let all = vec![true; if only.is_some() { 0 } else { nv }];
+    let mask: &[bool] = only.unwrap_or(&all);
+    // Vertices to skin: the mask plus its one-ring (edge stretch).
+    let mut need = mask.to_vec();
+    if only.is_some() {
+        for e in &model.edges {
+            if mask[e[0] as usize] || mask[e[1] as usize] {
+                need[e[0] as usize] = true;
+                need[e[1] as usize] = true;
+            }
+        }
+    }
+    let edges: Vec<usize> =
+        (0..model.edges.len()).filter(|&i| mask[model.edges[i][0] as usize] || mask[model.edges[i][1] as usize]).collect();
+    let verts: Vec<usize> = (0..nv).filter(|&v| mask[v]).collect();
     let th = &ctx.th;
     let sk = &model.skel;
     // Rest thickness: distance to the vertex's own (w >= 0.1) bone segments.
@@ -375,9 +402,14 @@ pub fn evaluate_with(model: &Model, ctx: &Ctx, w: &Weights, intersect: bool) -> 
     let per_pose: Vec<PoseOut> = (0..ctx.poses.len())
         .into_par_iter()
         .map(|p| {
-            let posed = lbs(model, &ctx.mats[p], w);
+            let posed: Vec<Vec3> = if only.is_none() {
+                lbs(model, &ctx.mats[p], w)
+            } else {
+                (0..nv).map(|v| if need[v] { crate::skin::lbs_vertex(&ctx.mats[p], &w[v], model.rest[v]) } else { Vec3::ZERO }).collect()
+            };
             let mut stretch = vec![1.0f64; nv];
-            for (ei, e) in model.edges.iter().enumerate() {
+            for &ei in &edges {
+                let e = &model.edges[ei];
                 let r0 = ctx.rest_edge[ei];
                 if r0 < 1e-12 {
                     continue;
@@ -392,7 +424,7 @@ pub fn evaluate_with(model: &Model, ctx: &Ctx, w: &Weights, intersect: bool) -> 
             let segs = &ctx.segs[p];
             let thin: Vec<f64> = (0..nv)
                 .map(|v| {
-                    if rest_thick[v] < min_thick || own[v].is_empty() {
+                    if !mask[v] || rest_thick[v] < min_thick || own[v].is_empty() {
                         return 1.0;
                     }
                     let d = own[v]
@@ -405,8 +437,8 @@ pub fn evaluate_with(model: &Model, ctx: &Ctx, w: &Weights, intersect: bool) -> 
             let isect = if intersect { self_intersections(model, &posed, th.intersect_sep * model.scale) } else { vec![false; nv] };
             let follow: Vec<f64> = (0..nv)
                 .map(|v| match &expected[v] {
-                    Some(e) => (crate::skin::lbs_vertex(&ctx.mats[p], e, model.rest[v]) - posed[v]).len() / model.scale,
-                    None => 0.0,
+                    Some(e) if mask[v] => (crate::skin::lbs_vertex(&ctx.mats[p], e, model.rest[v]) - posed[v]).len() / model.scale,
+                    _ => 0.0,
                 })
                 .collect();
             PoseOut { stretch, thin, isect, follow }
@@ -463,7 +495,7 @@ pub fn evaluate_with(model: &Model, ctx: &Ctx, w: &Weights, intersect: bool) -> 
         // pose must span > thin_extent radii along the region's bone.
         let mut thin_ok = vec![false; nv];
         let mut by_region: Vec<Vec<u32>> = vec![Vec::new(); nr];
-        for v in 0..nv {
+        for &v in &verts {
             if po.thin[v] < th.thin {
                 by_region[ctx.vregion[v] as usize].push(v as u32);
             }
@@ -486,7 +518,7 @@ pub fn evaluate_with(model: &Model, ctx: &Ctx, w: &Weights, intersect: bool) -> 
                 }
             }
         }
-        for v in 0..nv {
+        for &v in &verts {
             let s = po.stretch[v];
             let t = po.thin[v];
             max_stretch[v] = max_stretch[v].max(s);
@@ -533,12 +565,13 @@ pub fn evaluate_with(model: &Model, ctx: &Ctx, w: &Weights, intersect: bool) -> 
             flags[v] |= f;
         }
     }
-    for v in 0..nv {
+    for &v in &verts {
         energy[v] += 0.5 * pose_max[v];
     }
-    let bleed: Vec<Option<(u32, f64, f64)>> = (0..nv).into_par_iter().map(|v| bleed_of(ctx, model, w, v)).collect();
-    let noise: Vec<f64> = (0..nv).into_par_iter().map(|v| noise_of(model, w, v)).collect();
-    for v in 0..nv {
+    let bleed: Vec<Option<(u32, f64, f64)>> =
+        (0..nv).into_par_iter().map(|v| if mask[v] { bleed_of(ctx, model, w, v) } else { None }).collect();
+    let noise: Vec<f64> = (0..nv).into_par_iter().map(|v| if mask[v] { noise_of(model, w, v) } else { 0.0 }).collect();
+    for &v in &verts {
         if bleed[v].is_some() {
             flags[v] |= F_BLEED;
         }
@@ -551,8 +584,8 @@ pub fn evaluate_with(model: &Model, ctx: &Ctx, w: &Weights, intersect: bool) -> 
         energy[v] += bleed_energy(ctx, model, w, v) + 2.0 * (noise[v] - 0.3).max(0.0) + if w[v].is_empty() { 1.0 } else { 0.0 };
     }
     let pb = piece_bones(model, w);
-    for (_, _, verts) in &pb {
-        for &v in verts {
+    for (_, _, pverts) in &pb {
+        for &v in pverts.iter().filter(|&&v| mask[v as usize]) {
             flags[v as usize] |= F_PIECE;
             energy[v as usize] += 1.0;
         }

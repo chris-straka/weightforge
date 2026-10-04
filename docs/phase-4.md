@@ -25,7 +25,7 @@ What exists:
 they get the harsh generic ROM (every bone ±45° on two axes plus twist),
 and UniRig weights are broadly wrong; the right fix for several is a
 re-rig (rigforge/wrapforge), which weightforge does not do by design.
-F (54k verts, 44 bones, 252 poses) takes 34 s.
+F (54k verts, 44 bones, 252 poses) took 34 s; 12 s since incremental trial scoring.
 
 To finish P4: generate 10+ Tripo-rigged characters with genforge, drop
 them in `bench/models/` (UniRig outputs in a candidates folder), run

@@ -6,8 +6,8 @@ this repo. Select the armature (or any mesh it deforms), open the
 
 - **Check Weights** poses the rig through its range of motion and paints
   the `weightforge_bad` color attribute on every bound mesh: red = a
-  reported fault (tear, collapse, bleed, speckle, piece drift), orange =
-  passes through the body, white→pink = soft deformation cost. View it with
+  reported fault (tear, collapse, bleed, speckle, piece drift), tan =
+  passes through the body (warning), white→pink = soft deformation cost. View it with
   Solid shading, Color: Attribute. The panel lists score and findings.
 - **Pose Sheet** renders the range-of-motion sheet into an image datablock
   (shown in any open Image Editor).

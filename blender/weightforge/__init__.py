@@ -258,7 +258,9 @@ class WEIGHTFORGE_OT_check(bpy.types.Operator, _RigOp):
                     c = (1.0, 0.08, 0.05, 1.0)
                     painted += 1
                 elif fl:
-                    c = (1.0, 0.55, 0.1, 1.0)
+                    # Self-intersection is a warning: a light tint, so the
+                    # red faults stay the thing you see.
+                    c = (0.95, 0.85, 0.7, 1.0)
                 else:
                     c = (0.75 + 0.25 * t, 0.75 * (1 - t), 0.75 * (1 - t), 1.0)
                 data[vi * 4:vi * 4 + 4] = c

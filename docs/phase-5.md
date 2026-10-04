@@ -1,8 +1,10 @@
 # P5 — Blender extension and genforge hook
 
 Gate: one end-to-end genforge run: Tripo rig fails check → fixed → passes →
-inbox. **Extension met; genforge hook not done** (it lives in
-`~/SWE/genforge`, outside this repo, and genforge's P7 chain is not built).
+inbox. **Extension met; genforge hook in progress on the genforge side**
+(2026-10-04: genforge P7 is merged; genforge adds a built-in
+`genforge.weights_adapter check|fix` that calls this CLI per
+[integration.md](integration.md); no weightforge changes needed).
 
 - `blender/weightforge/` (GPL, subprocess only): Check Weights (paints
   the `weightforge_bad` color attribute), Pose Sheet (image datablock),

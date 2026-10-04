@@ -26,7 +26,7 @@ FIX:
   same poses, keeps the best per failing region, blends at seams, and
   never writes anything worse than the input in any region. Writes
   <out>.report.json (or --report path) with before/after numbers.
-  --method      auto (all) or one method; repeatable via auto only
+  --method      auto (every method, default) or one of smooth|geodesic|transfer|optimize
   --source      known-good rigged base to transfer weights from
   --candidate   extra weights to score (e.g. UniRig output); repeatable
   --all-regions also change regions the check did not flag
@@ -38,7 +38,10 @@ COMMON OPTIONS:
   --voxels <N>        voxel resolution for geodesics (default 128)
   --json              machine-readable report on stdout
 
-EXIT: 0 clean, 1 faults found, 2 usage/IO error.
+  -h, --help          this text;  -V, --version  print the version
+
+ENV: WF_DEBUG=1 traces fix's region trials on stderr.
+EXIT: 0 clean (fix: output passes), 1 faults found, 2 usage/IO error.
 ";
 
 struct Args {

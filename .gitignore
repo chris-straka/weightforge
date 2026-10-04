@@ -9,3 +9,4 @@ bench/results/
 out/
 *.report.json
 !tests/fixtures/**
+*.got.png

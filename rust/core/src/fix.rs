@@ -22,7 +22,19 @@ pub enum Method {
 }
 
 impl Method {
+    /// `auto`, one method, or a comma-separated list (`smooth,geodesic`).
     pub fn parse(s: &str) -> Option<Vec<Method>> {
+        if s.contains(',') {
+            let mut out = Vec::new();
+            for part in s.split(',') {
+                for m in Method::parse(part.trim())? {
+                    if !out.contains(&m) {
+                        out.push(m);
+                    }
+                }
+            }
+            return Some(out);
+        }
         Some(match s {
             "auto" => vec![Method::Smooth, Method::Geodesic, Method::Transfer, Method::Optimize],
             "smooth" | "cleanup" => vec![Method::Smooth],

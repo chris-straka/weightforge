@@ -26,7 +26,8 @@ FIX:
   same poses, keeps the best per failing region, blends at seams, and
   never writes anything worse than the input in any region. Writes
   <out>.report.json (or --report path) with before/after numbers.
-  --method      auto (every method, default) or one of smooth|geodesic|transfer|optimize
+  --method      auto (every method, default), or one or more of
+                smooth,geodesic,transfer,optimize (comma-separated)
   --source      known-good rigged base to transfer weights from
   --candidate   extra weights to score (e.g. UniRig output); repeatable
   --all-regions also change regions the check did not flag

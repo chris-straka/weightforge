@@ -1,7 +1,7 @@
 # weightforge — build plan
 
 Automatic skin-weight QA and repair for game-bound characters. Written
-2026-10-04 for the HLL asset pipeline (`~/Games/tools/asset-pipeline.md`)
+2026-10-04 for the HLL asset pipeline (`~/SWE/games/tools/asset-pipeline.md`)
 and genforge's `gen character` chain (`~/SWE/genforge/PLAN.md` P7).
 
 ## Why

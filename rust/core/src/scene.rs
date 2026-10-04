@@ -592,6 +592,25 @@ impl Model {
         Ok(Model { glb, skel, parts, prims, bind, rest, tris, vpart, weights, seam_split, edges, adj, scale })
     }
 
+    /// Per mesh (in file order): (mesh name, node name, raw positions of
+    /// all its skinned primitives concatenated, raw -> welded index).
+    pub fn raw_meshes(&self) -> Vec<(String, String, Vec<[f32; 3]>, Vec<u32>)> {
+        let mut out: Vec<(String, String, Vec<[f32; 3]>, Vec<u32>)> = Vec::new();
+        for prim in &self.prims {
+            let part = &self.parts[prim.part];
+            let pos_acc =
+                self.glb.json["meshes"][prim.mesh]["primitives"][prim.prim]["attributes"]["POSITION"].as_u64().unwrap_or(0) as usize;
+            let pos = self.glb.read_vec3(pos_acc).unwrap_or_default();
+            if out.last().is_none_or(|l| l.0 != part.name || l.1 != self.skel.nodes[part.node].name) {
+                out.push((part.name.clone(), self.skel.nodes[part.node].name.clone(), Vec::new(), Vec::new()));
+            }
+            let last = out.last_mut().unwrap();
+            last.2.extend(pos);
+            last.3.extend(prim.raw_to_weld.iter().copied());
+        }
+        out
+    }
+
     pub fn nverts(&self) -> usize {
         self.bind.len()
     }

@@ -12,11 +12,13 @@ weights — skin-weight QA and repair for rigged GLB characters
 
 USAGE:
   weights check   <in.glb> [--poses rom.ron] [--json] [--no-clips] [--voxels N]
+                  [--vertex-json flags.json]
   weights fix     <in.glb> --out <fixed.glb> [--method auto|smooth|geodesic|transfer|optimize]
                   [--source base.glb] [--candidate other.glb]... [--all-regions]
                   [--sheet before_after.png]
   weights sheet   <in.glb> --out sheet.png [--poses rom.ron] [--cols N]
   weights compare <a.glb> <b.glb> --out ab.png [--poses rom.ron]
+  weights dump    <in.glb> --out weights.json   (per-vertex joints/weights, for DCC import)
   weights fixture <fault|all> --out <dir>
 
 FIX:
@@ -44,7 +46,8 @@ struct Args {
     flags: Vec<(String, Option<String>)>,
 }
 
-const VALUED: &[&str] = &["--poses", "--voxels", "--out", "--cols", "--method", "--source", "--candidate", "--sheet", "--report"];
+const VALUED: &[&str] =
+    &["--poses", "--voxels", "--out", "--cols", "--method", "--source", "--candidate", "--sheet", "--report", "--vertex-json"];
 
 impl Args {
     fn parse(raw: Vec<String>) -> Result<Args, String> {
@@ -109,10 +112,32 @@ fn cmd_check(a: &Args) -> ExitCode {
         Ok(o) => o,
         Err(e) => return fail(e),
     };
-    let (_, _, _, rep) = match wf::check(Path::new(input), &opts) {
+    let (model, ctx, ev, rep) = match wf::check(Path::new(input), &opts) {
         Ok(x) => x,
         Err(e) => return fail(e),
     };
+    if let Some(vj) = a.get("--vertex-json") {
+        let mask = wf::report::finding_mask(&ctx, &ev, &rep);
+        let meshes: Vec<serde_json::Value> = model
+            .raw_meshes()
+            .into_iter()
+            .map(|(mesh, node, pos, map)| {
+                serde_json::json!({
+                    "mesh": mesh,
+                    "node": node,
+                    "positions": pos.iter().flatten().collect::<Vec<_>>(),
+                    "flags": map.iter().map(|&w| mask[w as usize]).collect::<Vec<_>>(),
+                    "energy": map.iter().map(|&w| (ev.energy[w as usize] * 1e4).round() / 1e4).collect::<Vec<_>>(),
+                })
+            })
+            .collect();
+        let flag_names: serde_json::Map<String, serde_json::Value> =
+            wf::metrics::FLAG_NAMES.iter().map(|(b, n)| (n.to_string(), serde_json::json!(b))).collect();
+        let doc = serde_json::json!({"flag_bits": flag_names, "meshes": meshes});
+        if let Err(e) = std::fs::write(vj, serde_json::to_vec(&doc).unwrap()) {
+            return fail(format!("{vj}: {e}"));
+        }
+    }
     if a.has("--json") {
         println!("{}", serde_json::to_string_pretty(&rep).unwrap());
     } else {
@@ -308,6 +333,33 @@ fn cmd_fix(a: &Args) -> ExitCode {
     if f.after.pass { ExitCode::SUCCESS } else { ExitCode::from(1) }
 }
 
+fn cmd_dump(a: &Args) -> ExitCode {
+    let Some(input) = a.pos.get(1) else { return fail("dump needs an input .glb") };
+    let Some(out) = a.get("--out") else { return fail("dump needs --out <weights.json>") };
+    let model = match wf::scene::Model::load(Path::new(input)) {
+        Ok(m) => m,
+        Err(e) => return fail(e),
+    };
+    let meshes: Vec<serde_json::Value> = model
+        .raw_meshes()
+        .into_iter()
+        .map(|(mesh, node, pos, map)| {
+            serde_json::json!({
+                "mesh": mesh,
+                "node": node,
+                "positions": pos.iter().flatten().collect::<Vec<_>>(),
+                "influences": map.iter().map(|&w| model.weights[w as usize].iter().map(|&(j, x)| serde_json::json!([j, (x * 1e6).round() / 1e6])).collect::<Vec<_>>()).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+    let doc = serde_json::json!({"joints": model.skel.names, "meshes": meshes});
+    if let Err(e) = std::fs::write(out, serde_json::to_vec(&doc).unwrap()) {
+        return fail(format!("{out}: {e}"));
+    }
+    println!("{out}");
+    ExitCode::SUCCESS
+}
+
 fn cmd_fixture(a: &Args) -> ExitCode {
     let Some(which) = a.pos.get(1) else { return fail("fixture needs a fault name or `all`") };
     let Some(out) = a.get("--out") else { return fail("fixture needs --out <dir>") };
@@ -351,6 +403,7 @@ fn main() -> ExitCode {
         "fix" => cmd_fix(&a),
         "sheet" => cmd_sheet(&a),
         "compare" => cmd_compare(&a),
+        "dump" => cmd_dump(&a),
         "fixture" => cmd_fixture(&a),
         other => fail(format!("unknown command {other} (try --help)")),
     }

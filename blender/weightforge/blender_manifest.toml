@@ -1,0 +1,14 @@
+schema_version = "1.0.0"
+
+id = "weightforge"
+version = "0.1.0"
+name = "WeightForge"
+tagline = "Skin-weight QA and repair driven by the weightforge CLI"
+maintainer = "Chris Straka"
+type = "add-on"
+blender_version_min = "4.2.0"
+license = ["SPDX:GPL-3.0-or-later"]
+tags = ["Rigging", "Animation"]
+
+[permissions]
+files = "Exports the rig to a temp GLB and runs the weights CLI on it"

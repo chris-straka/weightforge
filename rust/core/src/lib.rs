@@ -6,6 +6,7 @@
 //! sheets, and [`fix`] builds weight candidates, scores them on the same poses,
 //! and keeps the best per region.
 
+pub mod fix;
 pub mod fixtures;
 pub mod font;
 pub mod glb;

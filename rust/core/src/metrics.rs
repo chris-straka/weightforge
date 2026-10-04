@@ -101,6 +101,8 @@ pub struct Ctx {
     /// Piece vertices: nearest body triangle, barycentrics, and whether the
     /// match is trusted (close and facing the same way) or inpainted.
     pub piece_matches: Vec<(u32, [u32; 3], [f64; 3], bool)>,
+    /// Piece matches for repair (robust transfer, published defaults).
+    pub piece_transfer: Vec<(u32, [u32; 3], [f64; 3], bool)>,
 }
 
 pub struct CtxOpts<'a> {
@@ -170,24 +172,18 @@ impl Ctx {
             vregion.push(id);
         }
         let rest_edge = model.edges.iter().map(|e| (model.rest[e[0] as usize] - model.rest[e[1] as usize]).len()).collect();
-        let body_tris: Vec<[u32; 3]> =
-            model.tris.iter().filter(|t| t.iter().all(|&i| !model.parts[model.vpart[i as usize] as usize].piece)).copied().collect();
-        let piece_verts: Vec<u32> = (0..model.nverts() as u32).filter(|&v| model.parts[model.vpart[v as usize] as usize].piece).collect();
-        let piece_matches = if piece_verts.is_empty() || body_tris.is_empty() {
-            Vec::new()
-        } else {
-            let normals = crate::scene::vertex_normals(&model.rest, &model.tris);
-            let index = crate::transfer::TriIndex::new(&model.rest, body_tris);
-            crate::transfer::match_subset(
-                &index,
-                &normals,
-                &model.rest,
-                &normals,
-                &piece_verts,
-                o.match_dist * model.scale,
-                35f64.to_radians().cos(),
-            )
-        };
+        let is_body: Vec<bool> = (0..model.nverts()).map(|v| !model.parts[model.vpart[v] as usize].piece).collect();
+        let piece_verts: Vec<u32> = (0..model.nverts() as u32).filter(|&v| !is_body[v as usize]).collect();
+        let piece_matches =
+            crate::transfer::match_within(&model.rest, &model.tris, &is_body, &piece_verts, o.match_dist * model.scale, 35.0);
+        let piece_transfer = crate::transfer::match_within(
+            &model.rest,
+            &model.tris,
+            &is_body,
+            &piece_verts,
+            crate::transfer::ROBUST_DIST * model.scale,
+            crate::transfer::ROBUST_DEG,
+        );
         let region_bone = regions.iter().map(|r| if r.piece { None } else { sk.joint_by_name(&r.name) }).collect();
         Ctx {
             class,
@@ -202,6 +198,7 @@ impl Ctx {
             intersect: o.intersect,
             region_bone,
             piece_matches,
+            piece_transfer,
         }
     }
 }
@@ -333,6 +330,12 @@ pub fn piece_bones(model: &Model, w: &Weights) -> Vec<(String, Vec<String>, Vec<
 }
 
 pub fn evaluate(model: &Model, ctx: &Ctx, w: &Weights) -> Eval {
+    evaluate_with(model, ctx, w, ctx.intersect)
+}
+
+/// Like `evaluate`, choosing whether to run the (slow) self-intersection
+/// test; `fix` scores candidates without it.
+pub fn evaluate_with(model: &Model, ctx: &Ctx, w: &Weights, intersect: bool) -> Eval {
     let nv = model.nverts();
     let th = &ctx.th;
     let sk = &model.skel;
@@ -399,7 +402,7 @@ pub fn evaluate(model: &Model, ctx: &Ctx, w: &Weights) -> Eval {
                     d / rest_thick[v]
                 })
                 .collect();
-            let isect = if ctx.intersect { self_intersections(model, &posed, th.intersect_sep * model.scale) } else { vec![false; nv] };
+            let isect = if intersect { self_intersections(model, &posed, th.intersect_sep * model.scale) } else { vec![false; nv] };
             let follow: Vec<f64> = (0..nv)
                 .map(|v| match &expected[v] {
                     Some(e) => (crate::skin::lbs_vertex(&ctx.mats[p], e, model.rest[v]) - posed[v]).len() / model.scale,

@@ -292,9 +292,8 @@ pub fn build(fault: &str) -> Fixture {
             cape_tris.push([a, d, b]);
         }
     }
-    // Torso weights by height: smooth and close to what robust transfer
-    // from the back gives (naive nearest-surface transfer would jump
-    // between the thighs at the hem).
+    // A cape hangs from the upper back and follows the spine chain down to
+    // the hips (never the legs or arms): torso weights by height.
     let mut cape_w: Weights = cape_pos.iter().map(|p| chain_weights(&chains[0], (p.y - 0.85).max(0.0))).collect();
 
     let mut rng = Rng::new(7);
@@ -400,6 +399,7 @@ pub fn to_glb(f: &Fixture) -> Glb {
     let mut glb = Glb {
         json: json!({"asset": {"version": "2.0", "generator": "weightforge fixtures"}, "buffers": [{"byteLength": 0}]}),
         bin: Vec::new(),
+        json_raw: None,
     };
     let nb = f.bones.len();
     let globals: Vec<Mat4> = f.bones.iter().map(|b| Mat4::from_trs(b.head, bone_frame(b), v3(1.0, 1.0, 1.0))).collect();

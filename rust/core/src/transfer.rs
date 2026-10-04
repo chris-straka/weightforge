@@ -212,3 +212,27 @@ pub fn inpaint_from_matches(adj: &[Vec<u32>], matches: &[(u32, [u32; 3], [f64; 3
     }
     crate::solve::inpaint(adj, &subset, &known, &|v| nearest[v].clone().unwrap_or_default())
 }
+
+/// Published defaults for robust transfer (Abdrashitov et al. 2023): match
+/// within 5% of the bounding-box diagonal and 30 degrees of facing.
+pub const ROBUST_DIST: f64 = 0.05;
+pub const ROBUST_DEG: f64 = 30.0;
+
+/// Matches `targets` against the triangles whose vertices are all
+/// `is_src`, on one mesh (pieces onto the body of the same character).
+pub fn match_within(
+    pos: &[Vec3],
+    tris: &[[u32; 3]],
+    is_src: &[bool],
+    targets: &[u32],
+    max_dist: f64,
+    deg: f64,
+) -> Vec<(u32, [u32; 3], [f64; 3], bool)> {
+    let src_tris: Vec<[u32; 3]> = tris.iter().filter(|t| t.iter().all(|&i| is_src[i as usize])).copied().collect();
+    if src_tris.is_empty() || targets.is_empty() {
+        return Vec::new();
+    }
+    let normals = crate::scene::vertex_normals(pos, tris);
+    let index = TriIndex::new(pos, src_tris);
+    match_subset(&index, &normals, pos, &normals, targets, max_dist, deg.to_radians().cos())
+}

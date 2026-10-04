@@ -67,6 +67,9 @@ pub struct Prim {
     /// (JOINTS_n, WEIGHTS_n) accessor pairs.
     pub sets: Vec<(usize, usize)>,
     pub raw_to_weld: Vec<u32>,
+    /// Stored JOINTS_0/WEIGHTS_0 rows (single-set prims), rewritten verbatim
+    /// for vertices whose weights did not change.
+    pub raw_rows: Option<Vec<([f64; 4], [f64; 4])>>,
 }
 
 pub struct Model {
@@ -474,6 +477,22 @@ impl Model {
                     continue;
                 }
                 let pos = glb.read_vec3(pos_a as usize)?;
+                let raw_rows = if sets.len() == 1 {
+                    let (_, jv) = glb.read_f64(sets[0].0)?;
+                    let (_, wv) = glb.read_f64(sets[0].1)?;
+                    (jv.len() == pos.len() * 4 && wv.len() == pos.len() * 4).then(|| {
+                        (0..pos.len())
+                            .map(|v| {
+                                (
+                                    [jv[v * 4], jv[v * 4 + 1], jv[v * 4 + 2], jv[v * 4 + 3]],
+                                    [wv[v * 4], wv[v * 4 + 1], wv[v * 4 + 2], wv[v * 4 + 3]],
+                                )
+                            })
+                            .collect()
+                    })
+                } else {
+                    None
+                };
                 let mut raw_w: Vec<VW> = vec![Vec::new(); pos.len()];
                 for &(ja, wa) in &sets {
                     let (_, jv) = glb.read_f64(ja)?;
@@ -518,7 +537,7 @@ impl Model {
                         tris.push(w);
                     }
                 }
-                prims.push(Prim { part, mesh: mi, prim: pi, sets, raw_to_weld });
+                prims.push(Prim { part, mesh: mi, prim: pi, sets, raw_to_weld, raw_rows });
             }
         }
         if bind.is_empty() {
@@ -586,7 +605,7 @@ impl Model {
     /// in place when the storage allows, else as fresh accessors. Extra
     /// JOINTS_n/WEIGHTS_n sets are dropped (rfcheck allows one set).
     pub fn write_weights(&self, w: &Weights) -> Result<Glb> {
-        let mut glb = Glb { json: self.glb.json.clone(), bin: self.glb.bin.clone() };
+        let mut glb = Glb { json: self.glb.json.clone(), bin: self.glb.bin.clone(), json_raw: self.glb.json_raw.clone() };
         let nj = self.njoints();
         let mut written: BTreeMap<usize, Vec<[f64; 4]>> = BTreeMap::new();
         for prim in &self.prims {
@@ -594,7 +613,14 @@ impl Model {
             let (wct, wnorm) = glb.component_type(wa).unwrap_or((5126, false));
             let mut jrows = Vec::with_capacity(prim.raw_to_weld.len());
             let mut wrows = Vec::with_capacity(prim.raw_to_weld.len());
-            for &wi in &prim.raw_to_weld {
+            for (ri, &wi) in prim.raw_to_weld.iter().enumerate() {
+                if let Some(raw) = &prim.raw_rows {
+                    if w[wi as usize] == self.weights[wi as usize] && !self.seam_split.contains(&wi) {
+                        jrows.push(raw[ri].0);
+                        wrows.push(raw[ri].1);
+                        continue;
+                    }
+                }
                 let (jr, wr) = quantize_row(&w[wi as usize], wct, wnorm);
                 jrows.push(jr);
                 wrows.push(wr);

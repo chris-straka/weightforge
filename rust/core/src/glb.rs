@@ -22,6 +22,9 @@ pub fn err<T>(msg: impl Into<String>) -> Result<T> {
 pub struct Glb {
     pub json: Value,
     pub bin: Vec<u8>,
+    /// The JSON chunk as read, with its parse, so an unchanged JSON is
+    /// written back verbatim (exporters format floats their own way).
+    pub json_raw: Option<(Vec<u8>, Value)>,
 }
 
 const MAGIC: u32 = 0x4654_6C67; // "glTF"
@@ -48,6 +51,7 @@ impl Glb {
         let total = (u32_at(b, 8) as usize).min(b.len());
         let mut off = 12;
         let mut json = None;
+        let mut raw: Vec<u8> = Vec::new();
         let mut bin = Vec::new();
         while off + 8 <= total {
             let len = u32_at(b, off) as usize;
@@ -58,18 +62,24 @@ impl Glb {
             }
             let data = &b[start..start + len];
             match kind {
-                CHUNK_JSON => json = Some(serde_json::from_slice::<Value>(data).map_err(|e| Error(format!("GLB JSON chunk: {e}")))?),
+                CHUNK_JSON => {
+                    raw = data.to_vec();
+                    json = Some(serde_json::from_slice::<Value>(data).map_err(|e| Error(format!("GLB JSON chunk: {e}")))?);
+                }
                 CHUNK_BIN if bin.is_empty() => bin = data.to_vec(),
                 _ => {}
             }
             off = start + ((len + 3) & !3);
         }
-        let json = json.ok_or_else(|| Error("GLB has no JSON chunk".into()))?;
-        Ok(Glb { json, bin })
+        let json: Value = json.ok_or_else(|| Error("GLB has no JSON chunk".into()))?;
+        Ok(Glb { json_raw: Some((raw, json.clone())), json, bin })
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {
-        let mut js = serde_json::to_vec(&self.json).expect("json");
+        let mut js = match &self.json_raw {
+            Some((raw, parsed)) if *parsed == self.json => raw.clone(),
+            _ => serde_json::to_vec(&self.json).expect("json"),
+        };
         while js.len() % 4 != 0 {
             js.push(b' ');
         }

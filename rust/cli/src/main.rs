@@ -12,9 +12,23 @@ weights — skin-weight QA and repair for rigged GLB characters
 
 USAGE:
   weights check   <in.glb> [--poses rom.ron] [--json] [--no-clips] [--voxels N]
+  weights fix     <in.glb> --out <fixed.glb> [--method auto|smooth|geodesic|transfer|optimize]
+                  [--source base.glb] [--candidate other.glb]... [--all-regions]
+                  [--sheet before_after.png]
   weights sheet   <in.glb> --out sheet.png [--poses rom.ron] [--cols N]
   weights compare <a.glb> <b.glb> --out ab.png [--poses rom.ron]
   weights fixture <fault|all> --out <dir>
+
+FIX:
+  Builds candidates (the input is always candidate 0), scores each on the
+  same poses, keeps the best per failing region, blends at seams, and
+  never writes anything worse than the input in any region. Writes
+  <out>.report.json (or --report path) with before/after numbers.
+  --method      auto (all) or one method; repeatable via auto only
+  --source      known-good rigged base to transfer weights from
+  --candidate   extra weights to score (e.g. UniRig output); repeatable
+  --all-regions also change regions the check did not flag
+  --sheet       write an A/B compare sheet (input vs fixed)
 
 COMMON OPTIONS:
   --poses <file.ron>  range-of-motion set (default: built-in by skeleton class)
@@ -30,7 +44,7 @@ struct Args {
     flags: Vec<(String, Option<String>)>,
 }
 
-const VALUED: &[&str] = &["--poses", "--voxels", "--out", "--cols"];
+const VALUED: &[&str] = &["--poses", "--voxels", "--out", "--cols", "--method", "--source", "--candidate", "--sheet", "--report"];
 
 impl Args {
     fn parse(raw: Vec<String>) -> Result<Args, String> {
@@ -188,6 +202,112 @@ fn cmd_compare(a: &Args) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+fn cmd_fix(a: &Args) -> ExitCode {
+    let Some(input) = a.pos.get(1) else { return fail("fix needs an input .glb") };
+    let Some(out) = a.get("--out") else { return fail("fix needs --out <fixed.glb>") };
+    let methods = match wf::fix::Method::parse(a.get("--method").unwrap_or("auto")) {
+        Some(m) => m,
+        None => return fail("--method must be auto, smooth, geodesic, transfer, or optimize"),
+    };
+    let set = match load_poses(a) {
+        Ok(s) => s,
+        Err(e) => return fail(e),
+    };
+    let opts = match ctx_opts(a, set.as_ref()) {
+        Ok(o) => o,
+        Err(e) => return fail(e),
+    };
+    let model = match wf::scene::Model::load(Path::new(input)) {
+        Ok(m) => m,
+        Err(e) => return fail(e),
+    };
+    let source = match a.get("--source").map(|p| wf::scene::Model::load(Path::new(p))) {
+        Some(Ok(m)) => Some(m),
+        Some(Err(e)) => return fail(format!("--source: {e}")),
+        None => None,
+    };
+    let mut externals = Vec::new();
+    for (k, v) in &a.flags {
+        if k == "--candidate" {
+            let p = v.as_deref().unwrap_or("");
+            match wf::scene::Model::load(Path::new(p)) {
+                Ok(m) => externals.push((Path::new(p).file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(), m)),
+                Err(e) => return fail(format!("--candidate {p}: {e}")),
+            }
+        }
+    }
+    let ctx = wf::metrics::Ctx::new(&model, &opts);
+    let name = Path::new(input).file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let fo = wf::fix::FixOpts {
+        methods,
+        source: source.as_ref(),
+        external: externals.iter().map(|(n, m)| (n.clone(), m)).collect(),
+        all_regions: a.has("--all-regions"),
+    };
+    let res = wf::fix::fix(&name, &model, &ctx, &fo);
+    let glb = match model.write_weights(&res.weights) {
+        Ok(g) => g,
+        Err(e) => return fail(e),
+    };
+    if let Err(e) = std::fs::write(out, glb.to_bytes()) {
+        return fail(format!("{out}: {e}"));
+    }
+    let report_path = a.get("--report").map(str::to_string).unwrap_or_else(|| {
+        let p = Path::new(out);
+        p.with_file_name(format!("{}.report.json", p.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()))
+            .to_string_lossy()
+            .into_owned()
+    });
+    if let Err(e) = std::fs::write(&report_path, serde_json::to_string_pretty(&res.fix).unwrap()) {
+        return fail(format!("{report_path}: {e}"));
+    }
+    if let Some(sheet_path) = a.get("--sheet") {
+        let (rb, ra) = (&res.report_before, &res.report_after);
+        let ev0 = wf::metrics::evaluate(&model, &ctx, &model.weights);
+        let (ma, mb) = (wf::report::finding_mask(&ctx, &ev0, rb), wf::report::finding_mask(&ctx, &res.eval, ra));
+        let ta = format!("{name} (input)");
+        let tb = Path::new(out).file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        let sa = wf::render::Side {
+            model: &model,
+            ctx: &ctx,
+            ev: &ev0,
+            w: &model.weights,
+            info: wf::render::SheetInfo { title: &ta, mask: &ma, score: rb.score, pass: rb.pass, fails: fails(rb) },
+        };
+        let sb = wf::render::Side {
+            model: &model,
+            ctx: &ctx,
+            ev: &res.eval,
+            w: &res.weights,
+            info: wf::render::SheetInfo { title: &tb, mask: &mb, score: ra.score, pass: ra.pass, fails: fails(ra) },
+        };
+        if let Err(e) = write_png(sheet_path, &wf::render::compare(&sa, &sb, &wf::render::SheetOpts::default())) {
+            return fail(e);
+        }
+    }
+    let f = &res.fix;
+    println!(
+        "{} {name}: score {:.1} -> {:.1}, failing findings {} -> {}, {} verts changed",
+        if f.after.pass {
+            "FIXED"
+        } else if f.improved {
+            "IMPROVED"
+        } else {
+            "UNCHANGED"
+        },
+        f.before.score,
+        f.after.score,
+        f.before.fails,
+        f.after.fails,
+        f.verts_changed
+    );
+    for r in f.regions.iter().filter(|r| r.chosen != "original") {
+        println!("  {:<24} {:>5.1} -> {:>5.1}  via {}", r.label, r.before, r.after, r.chosen);
+    }
+    println!("{out}\n{report_path}");
+    if f.after.pass { ExitCode::SUCCESS } else { ExitCode::from(1) }
+}
+
 fn cmd_fixture(a: &Args) -> ExitCode {
     let Some(which) = a.pos.get(1) else { return fail("fixture needs a fault name or `all`") };
     let Some(out) = a.get("--out") else { return fail("fixture needs --out <dir>") };
@@ -228,6 +348,7 @@ fn main() -> ExitCode {
     };
     match a.pos[0].as_str() {
         "check" => cmd_check(&a),
+        "fix" => cmd_fix(&a),
         "sheet" => cmd_sheet(&a),
         "compare" => cmd_compare(&a),
         "fixture" => cmd_fixture(&a),

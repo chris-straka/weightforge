@@ -1,0 +1,22 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  rust:
+    # Goldens and fixture numbers are pinned on macOS arm64.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Format
+        run: cargo fmt --all --check --manifest-path rust/Cargo.toml
+      - name: Build
+        run: cargo build --locked --release --manifest-path rust/Cargo.toml
+      - name: Test (P0-P3 gates, goldens, CLI contract)
+        run: cargo test --locked --release --manifest-path rust/Cargo.toml

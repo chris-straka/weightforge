@@ -58,7 +58,7 @@ pub struct FixOpts<'a> {
     pub methods: Vec<Method>,
     /// Known-good rigged base to transfer from (e.g. wrapforge's fit).
     pub source: Option<&'a Model>,
-    /// Extra candidates (e.g. UniRig output), scored like the rest.
+    /// Extra candidates (e.g. SkinTokens output), scored like the rest.
     pub external: Vec<(String, &'a Model)>,
     /// Let regions without findings change too (default: fix only what
     /// the check flags).
@@ -589,7 +589,7 @@ pub fn optimize(model: &Model, ctx: &Ctx, start: &Weights, ev: &Eval) -> Weights
     prune_all(&cur)
 }
 
-/// External candidate (e.g. UniRig output) on a possibly different mesh
+/// External candidate (e.g. SkinTokens output) on a possibly different mesh
 /// and skeleton: joints mapped by name or head position, weights moved by
 /// robust transfer.
 pub fn external(model: &Model, ctx: &Ctx, other: &Model, match_dist: f64) -> Weights {

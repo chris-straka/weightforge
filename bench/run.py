@@ -6,7 +6,7 @@ numbers and A/B sheets for owner review.
 
 models_dir defaults to bench/models/ and results to bench/results/ (both
 gitignored: real assets and their outputs never get committed). With
---candidates, a file of the same stem there (e.g. UniRig output) is passed
+--candidates, a file of the same stem there (e.g. `skintokens skin` output) is passed
 as an extra candidate. Writes results/summary.json and results/index.md
 (one row per asset: verdict, score before -> after, failing findings,
 sheet path). Exit 1 if any fix made an asset worse (must never happen).

@@ -18,9 +18,10 @@ local real set, which is not yet the intended one** (see below).
   collapse at bends or twists), plus smoothness and stay-close terms,
   projected gradient on the simplex, bones limited to the start set plus
   geodesically near ones, flagged areas only.
-- **external**: `--candidate other.glb` (e.g. UniRig output via
-  `~/SWE/blender/unirig-mac`) is mapped by robust transfer and scored like the rest,
-  never trusted blindly.
+- **external**: `--candidate other.glb` (any rig of the same mesh; since
+  2026-10-05 the ML one is SkinTokens via `--skintokens`, which replaced
+  UniRig/`unirig-mac`) is mapped by robust transfer and scored like the
+  rest, never trusted blindly.
 
 ## Result (bench/p3.py)
 

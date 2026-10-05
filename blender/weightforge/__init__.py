@@ -178,7 +178,7 @@ class WeightForgeSettings(bpy.types.PropertyGroup):
     all_regions: BoolProperty(name="All Regions", default=False, description="Let fix change regions the check did not flag")
     poses_path: StringProperty(name="Poses", subtype="FILE_PATH", description="Range-of-motion .ron (blank: built-in by skeleton class)")
     source_path: StringProperty(name="Source Rig", subtype="FILE_PATH", description="Known-good rigged base .glb to transfer from")
-    candidate_path: StringProperty(name="Candidate", subtype="FILE_PATH", description="Extra weights to score, e.g. UniRig output .glb")
+    candidate_path: StringProperty(name="Candidate", subtype="FILE_PATH", description="Extra weights to score, e.g. SkinTokens output .glb")
     summary: StringProperty(name="Summary", default="")
     sheet_path: StringProperty(name="Sheet", default="")
 

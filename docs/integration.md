@@ -1,7 +1,7 @@
 # Integrating weightforge
 
 Where it sits in the HLL character chain: after rigging (Tripo auto-rig,
-UniRig, rigforge, wrapforge) and rfcheck, before animation and Godot
+SkinTokens, rigforge, wrapforge) and rfcheck, before animation and Godot
 export. It only ever rewrites `JOINTS_0`/`WEIGHTS_0`; topology, shape, bone
 names and hierarchy belong to retopoforge, wrapforge, rigforge.
 
@@ -11,7 +11,7 @@ names and hierarchy belong to retopoforge, wrapforge, rigforge.
 weights check rig.glb --json > check.json        # exit 0: pass, 1: faults, 2: error
 # on exit 1:
 weights fix rig.glb --out rig.fixed.glb --sheet rig.ab.png \
-    [--candidate unirig.glb] [--source base.glb]  # writes rig.fixed.report.json
+    [--skintokens] [--source base.glb]  # writes rig.fixed.report.json
 weights check rig.fixed.glb --json > recheck.json  # exit 0 means fixed
 ```
 

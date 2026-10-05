@@ -63,8 +63,13 @@ report, and a pose sheet with bad vertices painted red.
    smoothness and locality terms, starting from the best candidate
    (bounded-biharmonic-style constraints: weights in [0,1], partition of
    unity, sparse).
-5. **ML candidate:** UniRig weights via `~/SWE/blender/unirig-mac` as one more
-   candidate, never trusted blindly; it gets scored like the rest.
+5. **ML candidate:** SkinTokens weights for the rig's own skeleton
+   (`weights fix --skintokens` runs `skintokens skin` from
+   `~/SWE/blender/skintokens`) as one more candidate, never trusted
+   blindly; it gets scored like the rest. SkinTokens replaced UniRig
+   (`unirig-mac`, retired) on 2026-10-05: on the genforge rehearsal Andras
+   its own rig scores 47.9 raw / 61.6 fixed against UniRig's 10.1 / 33.6
+   and the game rig's 22.0 / 37.2 (`skintokens/docs/evaluation.md`).
 
 The original Tripo weights are always candidate 0, so a fix never scores
 worse than what came in.
@@ -89,7 +94,7 @@ worse than what came in.
 | P1 | `sheet`: ROM pose sheet with red bad-vertex overlay; `compare` A/B sheet | Golden images on the fixture mannequin; sheet readable on a phone (checked by eye) |
 | P2 | `fix` methods 1-2 (clean-up, geodesic voxel binding) + per-region picking and seam blending | On fixtures: weight error vs ground truth drops ≥80%; deformation score better on every faulted region; output passes rfcheck |
 | P3 | Methods 3-4 (transfer + inpaint, optimization) | Beats P2 on the 10 worst regions of the real test set |
-| P4 | Real assets: 10+ Tripo-rigged characters (humanoid + creature) from genforge, UniRig candidate | Report per asset; the owner judges before/after sheets in the inbox; ≥8/10 rated better or equal |
+| P4 | Real assets: 10+ Tripo-rigged characters (humanoid + creature) from genforge, SkinTokens candidate | Report per asset; the owner judges before/after sheets in the inbox; ≥8/10 rated better or equal |
 | P5 | Blender extension + `gen character` hook (genforge P7 calls `weights check`, then `fix` on failure) | One end-to-end genforge run: Tripo rig fails check → fixed → passes → inbox |
 
 ## Rules

@@ -1,7 +1,7 @@
 # weightforge
 
 Finds and fixes bad skin weights on rigged game characters, especially
-AI-generated ones (Tripo, UniRig). Rust core + `weights` CLI + Blender
+AI-generated ones (Tripo, SkinTokens, UniRig). Rust core + `weights` CLI + Blender
 extension, same split as retopoforge. GLB in, GLB out, rfcheck-clean.
 
 rfcheck checks structure (≤4 influences, sums to 1). weightforge moves the
@@ -26,7 +26,8 @@ Pure Rust, permissive deps only (serde, serde_json, ron, png, rayon).
     weights sheet   hero.glb --out sheet.png        # ROM pose sheet, bad verts red
     weights fix     hero.glb --out fixed.glb --sheet ab.png
                     [--method auto|smooth,geodesic,transfer,optimize]
-                    [--source base.glb] [--candidate unirig.glb] [--all-regions]
+                    [--source base.glb] [--candidate other.glb] [--skintokens]
+                    [--all-regions]
     weights compare a.glb b.glb --out ab.png        # same poses side by side
     weights dump    fixed.glb --out weights.json    # per-vertex weights for DCCs
     weights fixture all --out fixtures/             # test mannequins
@@ -48,6 +49,9 @@ optimize (LBS fit to dual-quaternion targets), and any `--candidate`. Each
 is scored on the same poses; the best one replaces only the flagged area of
 each failing region, blended at seams. No region ends worse than the input
 and no region gains a failing finding, or the input comes back unchanged.
+`--skintokens` adds the ML candidate: SkinTokens weights for the input's
+own skeleton (`skintokens skin`, sibling repo `~/SWE/blender/skintokens`,
+~1 min on the M4; opt-in, so default runs stay byte-deterministic).
 It writes `fixed.glb` (in place: only JOINTS_0/WEIGHTS_0 bytes change,
 never positions or bones), `fixed.report.json` (before/after per region,
 method chosen, candidate scores), and with `--sheet` the A/B picture.

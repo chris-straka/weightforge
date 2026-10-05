@@ -15,7 +15,7 @@ this repo. Select the armature (or any mesh it deforms), open the
   vertex groups in one undo step, and loads the before/after sheet. The fix
   never makes any region worse than the input and never moves a vertex.
   Options: method, a known-good **Source Rig** to transfer from, an extra
-  **Candidate** (e.g. UniRig output) to score, **All Regions**, **Use
+  **Candidate** (e.g. `skintokens skin` output) to score, **All Regions**, **Use
   Clips**, a custom **Poses** `.ron`, voxel resolution.
 
 How it works: the armature and every mesh bound to it are exported to a

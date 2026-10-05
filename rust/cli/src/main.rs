@@ -14,8 +14,8 @@ USAGE:
   weights check   <in.glb> [--poses rom.ron] [--json] [--no-clips] [--voxels N]
                   [--vertex-json flags.json]
   weights fix     <in.glb> --out <fixed.glb> [--method auto|smooth|geodesic|transfer|optimize]
-                  [--source base.glb] [--candidate other.glb]... [--all-regions]
-                  [--sheet before_after.png]
+                  [--source base.glb] [--candidate other.glb]... [--skintokens]
+                  [--all-regions] [--sheet before_after.png]
   weights sheet   <in.glb> --out sheet.png [--poses rom.ron] [--cols N]
   weights compare <a.glb> <b.glb> --out ab.png [--poses rom.ron]
   weights dump    <in.glb> --out weights.json   (per-vertex joints/weights, for DCC import)
@@ -29,7 +29,11 @@ FIX:
   --method      auto (every method, default), or one or more of
                 smooth,geodesic,transfer,optimize (comma-separated)
   --source      known-good rigged base to transfer weights from
-  --candidate   extra weights to score (e.g. UniRig output); repeatable
+  --candidate   extra weights to score (any rigged GLB of this mesh); repeatable
+  --skintokens  also score SkinTokens weights for this skeleton (the ML
+                candidate): runs `skintokens skin` ($SKINTOKENS_BIN, PATH, or
+                ~/SWE/blender/skintokens/bin/skintokens; ~1 min on an M4).
+                Never trusted blindly: scored like every other candidate
   --all-regions also change regions the check did not flag
   --sheet       write an A/B compare sheet (input vs fixed)
 
@@ -41,7 +45,7 @@ COMMON OPTIONS:
 
   -h, --help          this text;  -V, --version  print the version
 
-ENV: WF_DEBUG=1 traces fix's region trials on stderr.
+ENV: WF_DEBUG=1 traces fix's region trials on stderr. SKINTOKENS_BIN: see --skintokens.
 EXIT: 0 clean (fix: output passes), 1 faults found, 2 usage/IO error.
 ";
 
@@ -231,6 +235,43 @@ fn cmd_compare(a: &Args) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// The ML candidate: SkinTokens weights for the input's own skeleton
+/// (`skintokens skin`, sibling repo ~/SWE/blender/skintokens). Err = the tool
+/// is missing (usage error); Ok(None) = it ran and failed, so the fix goes on
+/// without it (a warning, never a worse result).
+fn skintokens_candidate(input: &str) -> Result<Option<wf::scene::Model>, String> {
+    let bin = std::env::var_os("SKINTOKENS_BIN")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("PATH").and_then(|p| std::env::split_paths(&p).map(|d| d.join("skintokens")).find(|f| f.is_file())))
+        .or_else(|| {
+            std::env::var_os("HOME").map(|h| PathBuf::from(h).join("SWE/blender/skintokens/bin/skintokens")).filter(|f| f.is_file())
+        })
+        .ok_or("skintokens not found (set SKINTOKENS_BIN or see ~/SWE/blender/skintokens)")?;
+    if !bin.is_file() {
+        return Err(format!("{} not found", bin.display()));
+    }
+    let dir = std::env::temp_dir().join(format!("weights_skintokens_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let (out, report) = (dir.join("skintokens.glb"), dir.join("result.json"));
+    eprintln!("weights: running SkinTokens on {input} (ML candidate)...");
+    let status = std::process::Command::new(&bin)
+        .arg("skin")
+        .arg(input)
+        .arg(&out)
+        .arg("--report")
+        .arg(&report)
+        .stdout(std::process::Stdio::null())
+        .status()
+        .map_err(|e| format!("{}: {e}", bin.display()))?;
+    let model = if status.success() { wf::scene::Model::load(&out).ok() } else { None };
+    if model.is_none() {
+        let why = std::fs::read_to_string(&report).unwrap_or_default();
+        eprintln!("weights: skintokens candidate skipped ({status}) {}", why.trim());
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(model)
+}
+
 fn cmd_fix(a: &Args) -> ExitCode {
     let Some(input) = a.pos.get(1) else { return fail("fix needs an input .glb") };
     let Some(out) = a.get("--out") else { return fail("fix needs --out <fixed.glb>") };
@@ -263,6 +304,13 @@ fn cmd_fix(a: &Args) -> ExitCode {
                 Ok(m) => externals.push((Path::new(p).file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(), m)),
                 Err(e) => return fail(format!("--candidate {p}: {e}")),
             }
+        }
+    }
+    if a.has("--skintokens") {
+        match skintokens_candidate(input) {
+            Ok(Some(m)) => externals.push(("skintokens".to_string(), m)),
+            Ok(None) => {}
+            Err(e) => return fail(format!("--skintokens: {e}")),
         }
     }
     let ctx = wf::metrics::Ctx::new(&model, &opts);

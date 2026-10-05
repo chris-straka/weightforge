@@ -78,3 +78,34 @@ fn help_lists_every_flag() {
         assert!(help.contains(f), "--help does not mention {f}");
     }
 }
+
+#[test]
+fn skintokens_candidate_is_scored() {
+    let d = tmp("skintokens");
+    let ds = d.to_str().unwrap();
+    assert_eq!(run(&["fixture", "all", "--out", ds]).0, 0);
+    let bleed = d.join("mannequin_bleed.glb");
+    let clean = d.join("mannequin_clean.glb");
+    // Fake `skintokens skin IN OUT --report R`: answers with the clean twin's weights.
+    let fake = d.join("skintokens");
+    std::fs::write(&fake, format!("#!/bin/sh\ncp '{}' \"$3\"\necho '{{\"ok\": true}}' > \"$5\"\n", clean.display())).unwrap();
+    std::process::Command::new("chmod").arg("+x").arg(&fake).status().unwrap();
+    let fixed = d.join("fixed.glb");
+    let o = Command::new(bin())
+        .args(["fix", bleed.to_str().unwrap(), "--out", fixed.to_str().unwrap(), "--skintokens"])
+        .env("SKINTOKENS_BIN", &fake)
+        .output()
+        .unwrap();
+    assert_eq!(o.status.code(), Some(0), "{}", String::from_utf8_lossy(&o.stderr));
+    let rep = std::fs::read_to_string(d.join("fixed.report.json")).unwrap();
+    assert!(rep.contains("external:skintokens"), "{rep}");
+    // Missing tool: usage error, nothing written.
+    let o = Command::new(bin())
+        .args(["fix", bleed.to_str().unwrap(), "--out", d.join("x.glb").to_str().unwrap(), "--skintokens"])
+        .env("SKINTOKENS_BIN", d.join("missing"))
+        .output()
+        .unwrap();
+    assert_eq!(o.status.code(), Some(2));
+    assert!(!d.join("x.glb").exists());
+    let _ = std::fs::remove_dir_all(&d);
+}

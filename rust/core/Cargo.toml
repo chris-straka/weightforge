@@ -11,3 +11,4 @@ serde_json.workspace = true
 ron.workspace = true
 png.workspace = true
 rayon.workspace = true
+glbkit.workspace = true

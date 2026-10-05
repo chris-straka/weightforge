@@ -2,6 +2,7 @@
 //! materials, and animations survive a round trip untouched. Writing only
 //! ever replaces skinning attribute data (weightforge never moves vertices).
 
+use glbkit::accessor::{Component, Desc, Layout, LayoutError, View, append_aligned};
 use serde_json::{Value, json};
 use std::fmt;
 
@@ -27,14 +28,6 @@ pub struct Glb {
     pub json_raw: Option<(Vec<u8>, Value)>,
 }
 
-const MAGIC: u32 = 0x4654_6C67; // "glTF"
-const CHUNK_JSON: u32 = 0x4E4F_534A;
-const CHUNK_BIN: u32 = 0x004E_4942;
-
-fn u32_at(b: &[u8], o: usize) -> u32 {
-    u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]])
-}
-
 impl Glb {
     pub fn read_path(path: &std::path::Path) -> Result<Glb> {
         let bytes = std::fs::read(path).map_err(|e| Error(format!("{}: {e}", path.display())))?;
@@ -42,66 +35,17 @@ impl Glb {
     }
 
     pub fn parse(b: &[u8]) -> Result<Glb> {
-        if b.len() < 20 || u32_at(b, 0) != MAGIC {
-            return err("not a glTF binary (.glb) file");
-        }
-        if u32_at(b, 4) != 2 {
-            return err("glTF container version is not 2");
-        }
-        let total = (u32_at(b, 8) as usize).min(b.len());
-        let mut off = 12;
-        let mut json = None;
-        let mut raw: Vec<u8> = Vec::new();
-        let mut bin = Vec::new();
-        while off + 8 <= total {
-            let len = u32_at(b, off) as usize;
-            let kind = u32_at(b, off + 4);
-            let start = off + 8;
-            if start + len > total {
-                return err("GLB chunk runs past end of file");
-            }
-            let data = &b[start..start + len];
-            match kind {
-                CHUNK_JSON => {
-                    raw = data.to_vec();
-                    json = Some(serde_json::from_slice::<Value>(data).map_err(|e| Error(format!("GLB JSON chunk: {e}")))?);
-                }
-                CHUNK_BIN if bin.is_empty() => bin = data.to_vec(),
-                _ => {}
-            }
-            off = start + ((len + 3) & !3);
-        }
-        let json: Value = json.ok_or_else(|| Error("GLB has no JSON chunk".into()))?;
-        Ok(Glb { json_raw: Some((raw, json.clone())), json, bin })
+        let c = glbkit::container::parse(b).map_err(|e| Error(format!("GLB: {e}")))?;
+        let json: Value = serde_json::from_slice(c.json).map_err(|e| Error(format!("GLB JSON chunk: {e}")))?;
+        Ok(Glb { json_raw: Some((c.json.to_vec(), json.clone())), json, bin: c.bin.to_vec() })
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {
-        let mut js = match &self.json_raw {
+        let js = match &self.json_raw {
             Some((raw, parsed)) if *parsed == self.json => raw.clone(),
             _ => serde_json::to_vec(&self.json).expect("json"),
         };
-        while js.len() % 4 != 0 {
-            js.push(b' ');
-        }
-        let mut bin = self.bin.clone();
-        while bin.len() % 4 != 0 {
-            bin.push(0);
-        }
-        let has_bin = !bin.is_empty();
-        let total = 12 + 8 + js.len() + if has_bin { 8 + bin.len() } else { 0 };
-        let mut out = Vec::with_capacity(total);
-        out.extend_from_slice(&MAGIC.to_le_bytes());
-        out.extend_from_slice(&2u32.to_le_bytes());
-        out.extend_from_slice(&(total as u32).to_le_bytes());
-        out.extend_from_slice(&(js.len() as u32).to_le_bytes());
-        out.extend_from_slice(&CHUNK_JSON.to_le_bytes());
-        out.extend_from_slice(&js);
-        if has_bin {
-            out.extend_from_slice(&(bin.len() as u32).to_le_bytes());
-            out.extend_from_slice(&CHUNK_BIN.to_le_bytes());
-            out.extend_from_slice(&bin);
-        }
-        out
+        glbkit::container::write(&js, &self.bin).expect("GLB under 4 GiB")
     }
 
     pub fn arr(&self, key: &str) -> &[Value] {
@@ -113,80 +57,51 @@ impl Glb {
         if acc.get("sparse").is_some() {
             return err(format!("accessor {idx} is sparse (unsupported)"));
         }
-        let count = acc.get("count").and_then(Value::as_u64).unwrap_or(0) as usize;
-        let ctype = acc.get("componentType").and_then(Value::as_u64).unwrap_or(0) as u32;
-        let ncomp = match acc.get("type").and_then(Value::as_str).unwrap_or("") {
-            "SCALAR" => 1,
-            "VEC2" => 2,
-            "VEC3" => 3,
-            "VEC4" => 4,
-            "MAT4" => 16,
-            t => return err(format!("accessor {idx}: unsupported type {t}")),
+        let num = |v: &Value, k: &str| v.get(k).and_then(Value::as_u64).map(|n| n as usize);
+        let bv_idx = num(acc, "bufferView");
+        let view = match bv_idx {
+            Some(i) => {
+                let bv = self.arr("bufferViews").get(i).ok_or_else(|| Error(format!("bufferView {i} missing")))?;
+                Some(View {
+                    buffer: num(bv, "buffer").unwrap_or(0),
+                    byte_offset: num(bv, "byteOffset").unwrap_or(0),
+                    byte_length: num(bv, "byteLength").unwrap_or(0),
+                    byte_stride: num(bv, "byteStride"),
+                })
+            }
+            None => None,
         };
-        let csize = match ctype {
-            5120 | 5121 => 1,
-            5122 | 5123 => 2,
-            5125 | 5126 => 4,
-            _ => return err(format!("accessor {idx}: bad componentType {ctype}")),
+        let desc = Desc {
+            count: num(acc, "count").unwrap_or(0),
+            component_type: acc.get("componentType").and_then(Value::as_u64).unwrap_or(0),
+            kind: acc.get("type").and_then(Value::as_str).unwrap_or(""),
+            normalized: acc.get("normalized").and_then(Value::as_bool).unwrap_or(false),
+            byte_offset: num(acc, "byteOffset").unwrap_or(0),
+            view,
         };
-        let normalized = acc.get("normalized").and_then(Value::as_bool).unwrap_or(false);
-        let Some(bv_idx) = acc.get("bufferView").and_then(Value::as_u64) else {
-            // No bufferView: all zeros by spec.
-            return Ok(Layout { count, ctype, ncomp, csize, normalized, start: 0, stride: 0, zero: true, bv: None });
-        };
-        let bv = self.arr("bufferViews").get(bv_idx as usize).ok_or_else(|| Error(format!("bufferView {bv_idx} missing")))?;
-        if bv.get("buffer").and_then(Value::as_u64).unwrap_or(0) != 0 {
-            return err("only the GLB-embedded buffer 0 is supported");
-        }
-        let bv_off = bv.get("byteOffset").and_then(Value::as_u64).unwrap_or(0) as usize;
-        let bv_len = bv.get("byteLength").and_then(Value::as_u64).unwrap_or(0) as usize;
-        let acc_off = acc.get("byteOffset").and_then(Value::as_u64).unwrap_or(0) as usize;
-        let elem = csize * ncomp;
-        let stride = bv.get("byteStride").and_then(Value::as_u64).map(|s| s as usize).unwrap_or(elem);
-        let start = bv_off + acc_off;
-        if count > 0 && (start + stride * (count - 1) + elem > bv_off + bv_len || bv_off + bv_len > self.bin.len()) {
-            return err(format!("accessor {idx} exceeds its buffer"));
-        }
-        Ok(Layout { count, ctype, ncomp, csize, normalized, start, stride, zero: false, bv: Some(bv_idx as usize) })
+        let layout = Layout::resolve(&desc, self.bin.len()).map_err(|e| match e {
+            LayoutError::ExternalBuffer(_) => Error("only the GLB-embedded buffer 0 is supported".into()),
+            LayoutError::BadComponent(c) => Error(format!("accessor {idx}: bad componentType {c}")),
+            LayoutError::BadType(t) => Error(format!("accessor {idx}: unsupported type {t}")),
+            _ => Error(format!("accessor {idx} exceeds its buffer ({e})")),
+        })?;
+        Ok(match bv_idx {
+            Some(i) => layout.with_view(i),
+            None => layout,
+        })
     }
 
     /// Reads any numeric accessor as f64 rows of `ncomp` values
     /// (normalized integers are mapped to [0,1] / [-1,1]).
     pub fn read_f64(&self, idx: usize) -> Result<(usize, Vec<f64>)> {
         let l = self.accessor_layout(idx)?;
-        let mut out = Vec::with_capacity(l.count * l.ncomp);
+        let mut out = Vec::with_capacity(l.count * l.width);
         for i in 0..l.count {
-            for c in 0..l.ncomp {
-                if l.zero {
-                    out.push(0.0);
-                    continue;
-                }
-                let o = l.start + i * l.stride + c * l.csize;
-                let b = &self.bin;
-                let v = match l.ctype {
-                    5120 => {
-                        let x = b[o] as i8 as f64;
-                        if l.normalized { (x / 127.0).max(-1.0) } else { x }
-                    }
-                    5121 => {
-                        let x = b[o] as f64;
-                        if l.normalized { x / 255.0 } else { x }
-                    }
-                    5122 => {
-                        let x = i16::from_le_bytes([b[o], b[o + 1]]) as f64;
-                        if l.normalized { (x / 32767.0).max(-1.0) } else { x }
-                    }
-                    5123 => {
-                        let x = u16::from_le_bytes([b[o], b[o + 1]]) as f64;
-                        if l.normalized { x / 65535.0 } else { x }
-                    }
-                    5125 => u32_at(b, o) as f64,
-                    _ => f32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]) as f64,
-                };
-                out.push(v);
+            for c in 0..l.width {
+                out.push(l.read_f64(&self.bin, i, c).ok_or_else(|| Error(format!("accessor {idx} exceeds its buffer")))?);
             }
         }
-        Ok((l.ncomp, out))
+        Ok((l.width, out))
     }
 
     pub fn read_vec3(&self, idx: usize) -> Result<Vec<[f32; 3]>> {
@@ -206,35 +121,25 @@ impl Glb {
     }
 
     /// Overwrites skinning data of a VEC4 JOINTS/WEIGHTS accessor in place.
-    /// Returns false when the accessor's storage cannot hold the values
-    /// (component type too small, zero-filled, shared bufferView we must not
-    /// touch); the caller then appends a fresh accessor instead.
+    /// Returns false, leaving the BIN untouched, when the accessor's storage
+    /// cannot hold the values (component type too small, zero-filled); the
+    /// caller then appends a fresh accessor instead.
     pub fn overwrite_vec4(&mut self, idx: usize, rows: &[[f64; 4]]) -> Result<bool> {
         let l = self.accessor_layout(idx)?;
-        if l.zero || l.ncomp != 4 || l.count != rows.len() {
+        if l.zero || l.width != 4 || l.count != rows.len() || !matches!(l.component, Component::U8 | Component::U16 | Component::F32) {
+            return Ok(false);
+        }
+        // Dry run on a scratch copy of one element first: a refused value
+        // must not leave a half-written accessor behind.
+        let mut probe = [0u8; 16];
+        let probe_layout = Layout { base: 0, stride: 0, count: 1, view: None, ..l };
+        if rows.iter().flatten().any(|&v| !probe_layout.write_f64(&mut probe, 0, 0, v)) {
             return Ok(false);
         }
         for (i, row) in rows.iter().enumerate() {
             for (c, &v) in row.iter().enumerate() {
-                let o = l.start + i * l.stride + c * l.csize;
-                let b = &mut self.bin;
-                match l.ctype {
-                    5121 => {
-                        let x = if l.normalized { (v * 255.0).round() } else { v.round() };
-                        if !(0.0..=255.0).contains(&x) {
-                            return Ok(false);
-                        }
-                        b[o] = x as u8;
-                    }
-                    5123 => {
-                        let x = if l.normalized { (v * 65535.0).round() } else { v.round() };
-                        if !(0.0..=65535.0).contains(&x) {
-                            return Ok(false);
-                        }
-                        b[o..o + 2].copy_from_slice(&(x as u16).to_le_bytes());
-                    }
-                    5126 => b[o..o + 4].copy_from_slice(&(v as f32).to_le_bytes()),
-                    _ => return Ok(false),
+                if !l.write_f64(&mut self.bin, i, c, v) {
+                    return Ok(false);
                 }
             }
         }
@@ -249,19 +154,17 @@ impl Glb {
     /// Appends a tightly packed accessor and returns its index.
     /// `ctype` 5123 (u16) or 5126 (f32).
     pub fn append_vec4(&mut self, rows: &[[f64; 4]], ctype: u32) -> usize {
-        while self.bin.len() % 4 != 0 {
-            self.bin.push(0);
-        }
-        let off = self.bin.len();
+        let mut bytes = Vec::with_capacity(rows.len() * 16);
         for row in rows {
             for &v in row {
                 match ctype {
-                    5123 => self.bin.extend_from_slice(&(v.round().clamp(0.0, 65535.0) as u16).to_le_bytes()),
-                    _ => self.bin.extend_from_slice(&(v as f32).to_le_bytes()),
+                    5123 => bytes.extend_from_slice(&(v.round().clamp(0.0, 65535.0) as u16).to_le_bytes()),
+                    _ => bytes.extend_from_slice(&(v as f32).to_le_bytes()),
                 }
             }
         }
-        let len = self.bin.len() - off;
+        let off = append_aligned(&mut self.bin, &bytes);
+        let len = bytes.len();
         let obj = self.json.as_object_mut().expect("root object");
         let bvs = obj.entry("bufferViews").or_insert_with(|| json!([])).as_array_mut().unwrap();
         bvs.push(json!({"buffer": 0, "byteOffset": off, "byteLength": len}));
@@ -285,11 +188,7 @@ impl Glb {
 
     /// Appends raw bytes as a bufferView (4-byte aligned) and returns its index.
     pub fn append_view(&mut self, bytes: &[u8], target: Option<u32>) -> usize {
-        while self.bin.len() % 4 != 0 {
-            self.bin.push(0);
-        }
-        let off = self.bin.len();
-        self.bin.extend_from_slice(bytes);
+        let off = append_aligned(&mut self.bin, bytes);
         let obj = self.json.as_object_mut().expect("root object");
         let bvs = obj.entry("bufferViews").or_insert_with(|| json!([])).as_array_mut().unwrap();
         let mut bv = json!({"buffer": 0, "byteOffset": off, "byteLength": bytes.len()});
@@ -308,19 +207,6 @@ impl Glb {
         accs.push(acc);
         accs.len() - 1
     }
-}
-
-struct Layout {
-    count: usize,
-    ctype: u32,
-    ncomp: usize,
-    csize: usize,
-    normalized: bool,
-    start: usize,
-    stride: usize,
-    zero: bool,
-    #[allow(dead_code)]
-    bv: Option<usize>,
 }
 
 pub fn f32_bytes(v: &[f32]) -> Vec<u8> {

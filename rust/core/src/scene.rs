@@ -13,9 +13,9 @@ use std::collections::BTreeMap;
 pub type VW = Vec<(u32, f64)>;
 pub type Weights = Vec<VW>;
 
-/// Mesh-name words that mark a detachable piece (shared with rfcheck's
-/// `P_PIECE_BONES` rule, deliberately identical).
-pub const PIECE_WORDS: &[&str] = &["cape", "cloak", "hair", "ponytail", "braid"];
+/// Mesh-name words that mark a detachable piece: rfcheck's `P_PIECE_BONES`
+/// rule reads the same list from glbkit.
+pub use glbkit::rig::PIECE_WORDS;
 
 #[derive(Clone, Debug)]
 pub struct Node {
@@ -457,9 +457,9 @@ impl Model {
             }
             let Some(mesh) = glb.arr("meshes").get(mi) else { continue };
             let name = mesh.get("name").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| skel.nodes[ni].name.clone());
-            let lower = name.to_lowercase();
             let part = parts.len();
-            parts.push(Part { name, mesh: mi, node: ni, piece: PIECE_WORDS.iter().any(|w| lower.contains(w)) });
+            let piece = glbkit::rig::is_piece_name(&name);
+            parts.push(Part { name, mesh: mi, node: ni, piece });
             let mut weld: BTreeMap<(i64, i64, i64), u32> = BTreeMap::new();
             for (pi, p) in mesh.get("primitives").and_then(Value::as_array).into_iter().flatten().enumerate() {
                 let attrs = p.get("attributes");

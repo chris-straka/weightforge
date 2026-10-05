@@ -15,6 +15,9 @@ measured gate numbers: `docs/phase-N.md`.
 - Never move vertices or rename/reparent bones: weightforge only writes
   JOINTS_0/WEIGHTS_0.
 - No GPL code in `rust/`. Check a crate's licence before adding it.
+- GLB container/accessor IO and the rig-contract constants (piece words,
+  4 influences) come from `glbkit` in the rfcheck repo, pinned by `rev`,
+  so the checker and the fixer cannot drift. Change shared rules there.
 - Headless Blender only (`--background --factory-startup`), and use the
   app binary, not the `~/.local/bin/blender` shim.
 

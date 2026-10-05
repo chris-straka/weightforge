@@ -161,7 +161,7 @@ impl Ctx {
             let (name, label, piece) = if part.piece {
                 (format!("piece:{}", part.name), part.name.clone(), true)
             } else {
-                let j = geo.nearest(v).map(|e| e.0 as usize).unwrap_or(0);
+                let j = crate::helpers::owner(sk, geo.nearest(v).map(|e| e.0 as usize).unwrap_or(0));
                 let label = role_of.get(&j).map(|r| pretty_role(r)).unwrap_or_else(|| sk.names[j].clone());
                 (sk.names[j].clone(), label, false)
             };
@@ -570,7 +570,11 @@ fn evaluate_inner(model: &Model, ctx: &Ctx, w: &Weights, intersect: bool, only: 
     }
     let bleed: Vec<Option<(u32, f64, f64)>> =
         (0..nv).into_par_iter().map(|v| if mask[v] { bleed_of(ctx, model, w, v) } else { None }).collect();
-    let noise: Vec<f64> = (0..nv).into_par_iter().map(|v| if mask[v] { noise_of(model, w, v) } else { 0.0 }).collect();
+    // Speckle is judged on how vertices move: a helper's weight counts as
+    // its share of the driver plus the rest on the helper's parent, so the
+    // clean edge of a helper band is not noise.
+    let weq = crate::helpers::equivalent(&model.skel, w);
+    let noise: Vec<f64> = (0..nv).into_par_iter().map(|v| if mask[v] { noise_of(model, &weq, v) } else { 0.0 }).collect();
     for &v in &verts {
         if bleed[v].is_some() {
             flags[v] |= F_BLEED;

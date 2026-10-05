@@ -49,6 +49,8 @@ pub struct Skeleton {
     pub rest_global: Vec<Mat4>,
     pub head: Vec<Vec3>,
     pub tail: Vec<Vec3>,
+    /// Twist/helper bones posed from their drivers (`helpers.rs`).
+    pub helpers: Vec<crate::helpers::Helper>,
 }
 
 #[derive(Clone, Debug)]
@@ -201,7 +203,7 @@ impl Skeleton {
             }
             None => vec![Mat4::IDENTITY; joints.len()],
         };
-        let names = joints.iter().map(|&j| nodes[j].name.clone()).collect();
+        let names: Vec<String> = joints.iter().map(|&j| nodes[j].name.clone()).collect();
         let mut node_to_joint = vec![usize::MAX; nodes.len()];
         for (ji, &n) in joints.iter().enumerate() {
             node_to_joint[n] = ji;
@@ -232,7 +234,8 @@ impl Skeleton {
         }
         let rest_global = globals(&nodes, &order);
         let head: Vec<Vec3> = joints.iter().map(|&n| rest_global[n].translation()).collect();
-        let mut sk = Skeleton { nodes, order, joints, names, ibm, jparent, jchildren, rest_global, tail: head.clone(), head };
+        let helpers = crate::helpers::detect(glb.arr("nodes"), &nodes, &joints, &names);
+        let mut sk = Skeleton { nodes, order, joints, names, ibm, jparent, jchildren, rest_global, tail: head.clone(), head, helpers };
         sk.tail = sk.estimate_tails();
         Ok(sk)
     }

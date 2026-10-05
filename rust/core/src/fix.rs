@@ -724,6 +724,17 @@ pub fn fix(file: &str, model: &Model, ctx: &Ctx, o: &FixOpts) -> FixResult {
             Method::Optimize => {}
         }
     }
+    // Twist/helper bones: generic candidates leave them unweighted (they
+    // carry no weight in the input); the helper band weights them, alone
+    // and refined by optimize (helpers.rs).
+    if !model.skel.helpers.is_empty() {
+        let bw = crate::helpers::band(model, &model.weights);
+        if o.methods.contains(&Method::Optimize) {
+            let (ev_b, _) = score(&bw);
+            push("helper-band+optimize".into(), optimize(model, ctx, &bw, &ev_b), &mut cands);
+        }
+        push("helper-band".into(), bw, &mut cands);
+    }
     for (name, other) in &o.external {
         push(format!("external:{name}"), external(model, ctx, other, match_dist), &mut cands);
     }

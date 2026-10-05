@@ -10,6 +10,7 @@ pub mod fix;
 pub mod fixtures;
 pub mod font;
 pub mod glb;
+pub mod helpers;
 pub mod math;
 pub mod metrics;
 pub mod poses;

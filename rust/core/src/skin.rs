@@ -32,7 +32,7 @@ pub fn joint_matrices(model: &Model, pose: &Pose) -> Vec<Mat4> {
             }
         }
     }
-    let g = if pose.moves.is_empty() {
+    let mut g = if pose.moves.is_empty() {
         globals(&nodes, &sk.order)
     } else {
         let mut node_moves: Vec<Vec<(Vec3, f64)>> = vec![Vec::new(); nodes.len()];
@@ -61,6 +61,14 @@ pub fn joint_matrices(model: &Model, pose: &Pose) -> Vec<Mat4> {
         }
         g
     };
+    // Helpers turn by their share of the driver unless the pose keys them.
+    let mut keyed = vec![false; nodes.len()];
+    for &(n, _, r, _) in &pose.locals {
+        if r.is_some() && n < keyed.len() {
+            keyed[n] = true;
+        }
+    }
+    crate::helpers::drive(sk, &mut g, &keyed);
     sk.joints.iter().map(|&n| g[n] * sk.rest_global[n].inverse()).collect()
 }
 

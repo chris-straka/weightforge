@@ -56,6 +56,39 @@ It writes `fixed.glb` (in place: only JOINTS_0/WEIGHTS_0 bytes change,
 never positions or bones), `fixed.report.json` (before/after per region,
 method chosen, candidate scores), and with `--sheet` the A/B picture.
 
+## Twist/helper bones
+
+The HLL humanoid has helper bones at the upper arms and thighs
+(`DEF-upper_arm_twist.L` ..., added by motionforge's standardize). Each
+sits on its driver's joint and turns by a share (0.5) of the driver's
+rotation; clips bake that, and weightforge poses them the same way
+(`core/src/helpers.rs`: node `extras.hll_helper`, else the `_twist`
+name). Helpers are not pose roles and not regions of their own, and
+noise is judged on what a vertex does (a helper weight counts as half
+driver, half parent), so unweighted helpers leave `check` unchanged.
+
+`fix` weights them: `helper-band` widens each limb/body split around
+the joint (6 rings and 20 smoothing passes for arms; 4 and 30 for legs,
+hips chain only so one thigh never spreads into the other) and re-blends
+it onto the helper, and `helper-band+optimize` refines that with the
+LBS-to-DQS fit. Generic candidates leave helpers unweighted (re-blending
+them too scored worse). Why: SkinTokens' armpit/groin transition is one
+or two edges wide, so a 90 deg swing tears those edges; widening it
+alone collapses the joint, and the half-turn helper holds the volume.
+
+Andras game mesh, fresh SkinTokens rig (seed 0), standardized
+(2026-10-05; sheets in `~/Downloads/twist-bones/`):
+
+| | raw | after `weights fix` |
+|---|---|---|
+| without helpers | 47.3 (4 failing) | 62.8 (4) |
+| with helpers | 47.6 (4) | 68.8 (2) |
+
+Arms up and right arm forward are clean. Still failing: right thigh
+stretch in `hip_forward.R` (9 verts, the crotch strip between the legs)
+and left upper arm volume in `arm_forward.L` (7 verts, front fold).
+Gate unchanged.
+
 ## Blender
 
 `blender/weightforge/` (GPL-3.0-or-later): sidebar tab with Check (heat

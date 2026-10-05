@@ -202,6 +202,10 @@ fn depth(sk: &Skeleton, j: usize) -> usize {
 pub fn resolve_roles(sk: &Skeleton) -> BTreeMap<String, Vec<usize>> {
     let mut roles: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     for j in 0..sk.joints.len() {
+        // Helpers follow their driver; a pose never moves them directly.
+        if crate::helpers::helper_of(sk, j).is_some() {
+            continue;
+        }
         let (side, body) = side_of(&strip_prefixes(&sk.names[j]));
         let Some(part) = part_of(&body) else { continue };
         let key = match side {

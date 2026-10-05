@@ -63,7 +63,7 @@ report, and a pose sheet with bad vertices painted red.
    smoothness and locality terms, starting from the best candidate
    (bounded-biharmonic-style constraints: weights in [0,1], partition of
    unity, sparse).
-5. **ML candidate:** UniRig weights via `~/SWE/unirig-mac` as one more
+5. **ML candidate:** UniRig weights via `~/SWE/blender/unirig-mac` as one more
    candidate, never trusted blindly; it gets scored like the rest.
 
 The original Tripo weights are always candidate 0, so a fix never scores

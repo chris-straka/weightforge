@@ -19,7 +19,7 @@ local real set, which is not yet the intended one** (see below).
   projected gradient on the simplex, bones limited to the start set plus
   geodesically near ones, flagged areas only.
 - **external**: `--candidate other.glb` (e.g. UniRig output via
-  `~/SWE/unirig-mac`) is mapped by robust transfer and scored like the rest,
+  `~/SWE/blender/unirig-mac`) is mapped by robust transfer and scored like the rest,
   never trusted blindly.
 
 ## Result (bench/p3.py)

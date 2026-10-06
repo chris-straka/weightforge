@@ -17,6 +17,7 @@
 //! (`reblend`), so a candidate never drops the helpers.
 
 use crate::math::{Mat4, Quat};
+use crate::metrics::Ctx;
 use crate::scene::{Model, Node, Skeleton, VW, Weights, normalize_vw, prune_vw};
 use serde_json::Value;
 
@@ -135,20 +136,23 @@ fn outside(sk: &Skeleton) -> Vec<Vec<bool>> {
         .collect()
 }
 
-/// Band widths `(rings, smoothing passes)`, measured on the SkinTokens
-/// Andras game mesh (5.8k verts, README "Twist/helper bones"): wider arm bands
-/// trade stretch for collapse, wider leg bands drag the shirt hem.
-pub const ARM_BAND: (usize, usize) = (6, 20);
-pub const LEG_BAND: (usize, usize) = (4, 30);
+/// Band widths `(zone, smoothing)` in limb radii of the driver (the median
+/// distance of its region's vertices to its bone), so a band keeps its
+/// width at any mesh density. Measured on the SkinTokens Andras game mesh
+/// (README "Twist/helper bones"), where they were 6 rings / 20 passes
+/// (arms) and 4 rings / 30 passes (legs): wider arm bands trade stretch
+/// for collapse, wider leg bands drag the shirt hem.
+pub const ARM_BAND: (f64, f64) = (2.55, 0.95);
+pub const LEG_BAND: (f64, f64) = (1.6, 1.1);
 
-/// Fix candidate: widen each driver's joint band, then re-blend it onto
-/// the helper. Around the joint, the driver's share `a = limb / (limb +
-/// body)` is smoothed over the mesh (`rings` rings around the vertices
-/// that mix the two or sit on a hard edge between them, then Laplacian
-/// passes), so the armpit and groin turn gradually instead of tearing;
-/// the helper then keeps that wider blend from collapsing (`reassign`).
-/// Identity without helpers.
-pub fn band(model: &Model, w: &Weights) -> Weights {
+/// Fix candidate: widen each driver's joint band (`width` scales both
+/// band widths; `fix` tries a few), then re-blend it onto the helper. Around the joint, the driver's share `a = limb / (limb +
+/// body)` is smoothed over the mesh (within a zone around the vertices that
+/// mix the two or sit on a hard edge between them, then Laplacian passes
+/// for the band's width), so the armpit and groin turn gradually instead
+/// of tearing; the helper then keeps that wider blend from collapsing
+/// (`reassign`). Identity without helpers.
+pub fn band(model: &Model, ctx: &Ctx, w: &Weights, width: f64) -> Weights {
     let sk = &model.skel;
     if sk.helpers.is_empty() {
         return w.clone();
@@ -175,7 +179,14 @@ pub fn band(model: &Model, w: &Weights) -> Weights {
         // Legs: the body side is the hips chain only, so the band never
         // spreads one thigh into the other across the crotch.
         let is_leg = sk.names[h.driver].contains("thigh");
-        let (rings, iters) = if is_leg { LEG_BAND } else { ARM_BAND };
+        let (zone_r, smooth_r) = if is_leg { LEG_BAND } else { ARM_BAND };
+        let radius = ctx
+            .regions
+            .iter()
+            .position(|r| r.name == sk.names[h.driver])
+            .map(|r| ctx.region_radius[r])
+            .filter(|&x| x > 0.0)
+            .unwrap_or(ctx.feature);
         let body_set: Vec<bool> =
             if is_leg { (0..sk.joints.len()).map(|j| j != h.driver && is_ancestor(sk, j, h.driver)).collect() } else { out[k].clone() };
         let parent = sk.jparent[h.driver].unwrap_or(h.driver) as u32;
@@ -192,14 +203,22 @@ pub fn band(model: &Model, w: &Weights) -> Weights {
                         || model.adj[v].iter().any(|&u| joint[u as usize] && (share_of(v) - share_of(u as usize)).abs() > 0.5))
             })
             .collect();
-        let mut zone = mixed.clone();
-        for _ in 0..rings {
-            let prev = zone.clone();
-            for v in 0..nv {
-                if !prev[v] && joint[v] && model.adj[v].iter().any(|&u| prev[u as usize]) {
-                    zone[v] = true;
+        let zone = crate::fix::grow(model, &mixed, width * zone_r * radius, Some(&joint));
+        let iters = crate::fix::passes(model, &zone, width * smooth_r * radius);
+        if std::env::var_os("WF_DEBUG").is_some() {
+            let (mut sum, mut cnt) = (0.0, 0);
+            for e in &model.edges {
+                if mixed[e[0] as usize] && mixed[e[1] as usize] {
+                    sum += (model.rest[e[0] as usize] - model.rest[e[1] as usize]).len();
+                    cnt += 1;
                 }
             }
+            eprintln!(
+                "band {}: radius {radius:.4}, seed edge {:.4}, zone {} verts, {iters} passes",
+                sk.names[h.driver],
+                sum / cnt.max(1) as f64,
+                zone.iter().filter(|&&z| z).count()
+            );
         }
         let mut a: Vec<f64> = (0..nv).map(|v| if joint[v] { limb[v] / (limb[v] + body[v]) } else { 0.0 }).collect();
         for _ in 0..iters {
@@ -373,7 +392,7 @@ mod tests {
         let ctx = Ctx::new(&m, &CtxOpts::default());
         // No region is named after a helper; it belongs to its driver.
         assert!(!ctx.regions.iter().any(|r| r.name.contains("_twist")));
-        let w = band(&m, &m.weights);
+        let w = band(&m, &ctx, &m.weights, 1.0);
         for h in &m.skel.helpers {
             let total: f64 = w.iter().flat_map(|vw| vw.iter()).filter(|e| e.0 as usize == h.joint).map(|e| e.1).sum();
             assert!(total > 1.0, "{} got no weight", m.skel.names[h.joint]);

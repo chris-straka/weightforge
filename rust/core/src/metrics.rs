@@ -103,6 +103,13 @@ pub struct Ctx {
     pub piece_matches: Vec<(u32, [u32; 3], [f64; 3], bool)>,
     /// Piece matches for repair (robust transfer, published defaults).
     pub piece_transfer: Vec<(u32, [u32; 3], [f64; 3], bool)>,
+    /// Feature size: the median distance of body vertices to the bone of
+    /// their region (a typical limb radius). Repair bands are measured in
+    /// it, not in edge rings, so they keep their width at any mesh density.
+    pub feature: f64,
+    /// Median rest distance to the region's bone, per region (its limb
+    /// radius; 0 for pieces).
+    pub region_radius: Vec<f64>,
 }
 
 pub struct CtxOpts<'a> {
@@ -184,7 +191,24 @@ impl Ctx {
             crate::transfer::ROBUST_DIST * model.scale,
             crate::transfer::ROBUST_DEG,
         );
-        let region_bone = regions.iter().map(|r| if r.piece { None } else { sk.joint_by_name(&r.name) }).collect();
+        let region_bone: Vec<Option<usize>> = regions.iter().map(|r| if r.piece { None } else { sk.joint_by_name(&r.name) }).collect();
+        let median = |mut d: Vec<f64>| -> f64 {
+            if d.is_empty() {
+                return 0.0;
+            }
+            d.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            d[d.len() / 2]
+        };
+        let mut per: Vec<Vec<f64>> = vec![Vec::new(); regions.len()];
+        for v in 0..model.nverts() {
+            let r = vregion[v] as usize;
+            if let Some(j) = region_bone[r] {
+                per[r].push(sk.seg_dist(j, model.rest[v]));
+            }
+        }
+        let feature = median(per.iter().flatten().copied().collect());
+        let feature = if feature > 0.0 { feature } else { 0.02 * model.scale };
+        let region_radius: Vec<f64> = per.into_iter().map(median).collect();
         Ctx {
             class,
             poses,
@@ -199,6 +223,8 @@ impl Ctx {
             region_bone,
             piece_matches,
             piece_transfer,
+            feature,
+            region_radius,
         }
     }
 }

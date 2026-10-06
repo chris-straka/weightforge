@@ -103,6 +103,9 @@ pub struct FixReport {
     pub before: Summary,
     pub after: Summary,
     pub improved: bool,
+    /// The region pick searched every plan (false: it hit its node budget
+    /// and kept the best plan found; only on rigs with many failing regions).
+    pub pick_exact: bool,
     pub verts_changed: usize,
     pub mean_l1_change: f64,
     pub max_influences: usize,
@@ -142,6 +145,85 @@ pub fn smooth(model: &Model, w: &Weights, mask: &[bool], iters: usize, lambda: f
             .collect();
     }
     cur
+}
+
+/// Repair band widths, in feature sizes (`Ctx::feature`, the median limb
+/// radius), never in edge rings: a ring-count band is half as wide on a
+/// mesh twice as dense, and tears there. Calibrated on the test mannequin
+/// the ring counts were tuned on (P2; mean edge 0.47 feature sizes, cape
+/// edge 0.8), so there each band is as wide as before (old ring counts in
+/// brackets).
+pub mod widths {
+    /// Margin around flagged vertices that a fix may change (6 rings).
+    pub const MARGIN: f64 = 2.8;
+    /// Seam blend between a candidate and the input, as a Gaussian width
+    /// (3 smoothing passes).
+    pub const SEAM: f64 = 0.4;
+    /// Clean-up: margin around tears and collapses (3 rings) and its
+    /// smoothing width (12 passes).
+    pub const TORN_MARGIN: f64 = 1.4;
+    pub const TORN_SMOOTH: f64 = 0.8;
+    /// Geodesic binding's smoothing (4 passes).
+    pub const GEODESIC_SMOOTH: f64 = 0.5;
+    /// Piece (cape, skirt) smoothing after transfer (2 passes).
+    pub const PIECE_SMOOTH: f64 = 0.57;
+    /// Margin that optimize may change around flagged vertices (4 rings).
+    pub const OPTIMIZE_MARGIN: f64 = 1.9;
+}
+
+/// Vertices within rest-pose edge-path distance `dist` of `seeds`,
+/// travelling only through `within` (everywhere when `None`). The metric
+/// counterpart of `dilate`.
+pub fn grow(model: &Model, seeds: &[bool], dist: f64, within: Option<&[bool]>) -> Vec<bool> {
+    use std::cmp::Reverse;
+    use std::collections::BinaryHeap;
+    let n = model.nverts();
+    let mut d = vec![f64::INFINITY; n];
+    let mut heap = BinaryHeap::new();
+    for v in 0..n {
+        if seeds[v] {
+            d[v] = 0.0;
+            heap.push(Reverse((0u64, v)));
+        }
+    }
+    // f64 >= 0 orders like its bit pattern.
+    while let Some(Reverse((bits, v))) = heap.pop() {
+        let dv = f64::from_bits(bits);
+        if dv > d[v] {
+            continue;
+        }
+        for &u in &model.adj[v] {
+            let u = u as usize;
+            if within.is_some_and(|m| !m[u]) {
+                continue;
+            }
+            let du = dv + (model.rest[u] - model.rest[v]).len();
+            if du < d[u] && du <= dist {
+                d[u] = du;
+                heap.push(Reverse((du.to_bits(), u)));
+            }
+        }
+    }
+    d.iter().map(|x| x.is_finite()).collect()
+}
+
+/// Smoothing passes (`smooth` with lambda 0.5) that spread a weight like a
+/// Gaussian of width `sigma`: each pass moves it a quarter of a squared edge
+/// on average, so n passes spread `h * sqrt(n) / 2` (h = mean rest edge
+/// length among `mask`ed vertices).
+pub fn passes(model: &Model, mask: &[bool], sigma: f64) -> usize {
+    let (mut sum, mut cnt) = (0.0, 0usize);
+    for e in &model.edges {
+        if mask[e[0] as usize] && mask[e[1] as usize] {
+            sum += (model.rest[e[0] as usize] - model.rest[e[1] as usize]).len();
+            cnt += 1;
+        }
+    }
+    if cnt == 0 || sum <= 0.0 {
+        return 0;
+    }
+    let h = sum / cnt as f64;
+    ((4.0 * sigma * sigma / (h * h)).round() as usize).min(2000)
 }
 
 pub fn dilate(model: &Model, mask: &[bool], rings: usize) -> Vec<bool> {
@@ -251,7 +333,8 @@ fn pieces_from_body(model: &Model, ctx: &Ctx, w: &Weights) -> Weights {
         }
     }
     let piece_mask: Vec<bool> = (0..model.nverts()).map(|v| is_piece(model, v)).collect();
-    smooth(model, &out, &piece_mask, 2, 0.5)
+    let n = passes(model, &piece_mask, widths::PIECE_SMOOTH * ctx.feature);
+    smooth(model, &out, &piece_mask, n, 0.5)
 }
 
 /// Bones that carry weight anywhere in the input (the rig's deform set).
@@ -338,8 +421,9 @@ pub fn cleanup(model: &Model, ctx: &Ctx, ev: &Eval, smooth_tears: bool) -> Weigh
         return prune_all(&w);
     }
     let torn: Vec<bool> = ev.flags.iter().map(|&f| f & !(F_INTERSECT | F_NOISE) != 0).collect();
-    let mask = dilate(model, &torn, 3);
-    prune_all(&smooth(model, &w, &mask, 12, 0.5))
+    let mask = grow(model, &torn, widths::TORN_MARGIN * ctx.feature, None);
+    let n = passes(model, &mask, widths::TORN_SMOOTH * ctx.feature);
+    prune_all(&smooth(model, &w, &mask, n, 0.5))
 }
 
 /// Method 2, geodesic voxel binding (Dionne & de Lasa 2013): weight falls
@@ -372,7 +456,8 @@ pub fn geodesic(model: &Model, ctx: &Ctx) -> Weights {
         })
         .collect();
     let body: Vec<bool> = (0..model.nverts()).map(|v| !is_piece(model, v)).collect();
-    let w = prune_all(&smooth(model, &w, &body, 4, 0.5));
+    let n = passes(model, &body, widths::GEODESIC_SMOOTH * ctx.feature);
+    let w = prune_all(&smooth(model, &w, &body, n, 0.5));
     prune_all(&pieces_from_body(model, ctx, &w))
 }
 
@@ -521,7 +606,7 @@ fn project_simplex(v: &mut [f64]) {
 /// set plus geodesically near ones. Only flagged areas move.
 pub fn optimize(model: &Model, ctx: &Ctx, start: &Weights, ev: &Eval) -> Weights {
     let flagged: Vec<bool> = ev.flags.iter().map(|&f| f & !crate::metrics::F_INTERSECT != 0).collect();
-    let active = dilate(model, &flagged, 4);
+    let active = grow(model, &flagged, widths::OPTIMIZE_MARGIN * ctx.feature, None);
     let targets: Vec<Vec<Vec3>> = ctx.mats.par_iter().map(|m| dqs(model, m, start)).collect();
     let np = ctx.poses.len().max(1) as f64;
     let s2 = model.scale * model.scale;
@@ -603,8 +688,8 @@ fn l1(a: &VW, b: &VW) -> f64 {
         + b.iter().filter(|e| weight_of(a, e.0) == 0.0).map(|e| e.1).sum::<f64>()
 }
 
-/// Blends per-region candidate choices with a few rings of smoothing at
-/// region seams.
+/// Blends per-region candidate choices, smoothing the seams with `passes`
+/// passes (see `passes`).
 fn blend(model: &Model, ctx: &Ctx, cands: &[Candidate], choice: &[usize], active: &[bool], rings: usize) -> Weights {
     let nv = model.nverts();
     let nc = cands.len();
@@ -643,6 +728,61 @@ fn blend(model: &Model, ctx: &Ctx, cands: &[Candidate], choice: &[usize], active
         .collect()
 }
 
+/// Flagged-vertex counts per region and flag (`pick::NFLAG` slots in
+/// `FLAG_NAMES` order; self-intersection, a warning, is not counted).
+fn flag_counts(ctx: &Ctx, flags: &[u8], regions: Option<&[bool]>) -> Vec<[i64; crate::pick::NFLAG]> {
+    let mut out = vec![[0i64; crate::pick::NFLAG]; ctx.regions.len()];
+    for (v, &f) in flags.iter().enumerate() {
+        let r = ctx.vregion[v] as usize;
+        if f == 0 || regions.is_some_and(|d| !d[r]) {
+            continue;
+        }
+        for (i, (bit, _)) in crate::metrics::FLAG_NAMES.iter().enumerate() {
+            if f & bit != 0 && *bit != crate::metrics::F_INTERSECT {
+                out[r][i] += 1;
+            }
+        }
+    }
+    out
+}
+
+/// Per region and flag: the flagged count at which `report::build` makes
+/// it a failing finding, and the highest count allowed (one less, for
+/// regions that do not fail yet; unlimited where the region already fails).
+type Counts = Vec<[i64; crate::pick::NFLAG]>;
+fn fail_limits(model: &Model, ctx: &Ctx, had_fail: &[bool]) -> (Counts, Counts) {
+    use crate::metrics::{F_FOLLOW, F_INTERSECT, F_PIECE, F_UNWEIGHTED, FLAG_NAMES};
+    let mut attached = vec![0i64; ctx.regions.len()];
+    for m in ctx.piece_matches.iter().filter(|m| m.3) {
+        attached[ctx.vregion[m.0 as usize] as usize] += 1;
+    }
+    let _ = model;
+    let fail_at: Counts = (0..ctx.regions.len())
+        .map(|r| {
+            std::array::from_fn(|i| {
+                let bit = FLAG_NAMES[i].0;
+                let min = if bit == F_UNWEIGHTED || bit == F_PIECE { 1 } else { ctx.th.region_min_bad as i64 };
+                match bit {
+                    F_INTERSECT => i64::MAX,
+                    // A piece straying in fewer than half its attached verts is a warning.
+                    F_FOLLOW => min.max((attached[r] + 1) / 2),
+                    _ => min,
+                }
+            })
+        })
+        .collect();
+    let limit = (0..ctx.regions.len())
+        .map(|r| if had_fail[r] { [i64::MAX; crate::pick::NFLAG] } else { fail_at[r].map(|x| if x == i64::MAX { x } else { x - 1 }) })
+        .collect();
+    (fail_at, limit)
+}
+
+/// Edit cost: score energy per unit of mean weight change (`pick::Problem::
+/// edit_cost`). 0.01 weighs a plan that changes every vertex's weights by
+/// 0.1 (L1) like 0.001 of energy, about 0.1 score points near 90: among
+/// plans that score about the same, the smaller edit wins.
+const EDIT_MU: f64 = 0.01;
+
 fn summary(r: &Report) -> Summary {
     Summary { score: r.score, pass: r.pass, fails: r.findings.iter().filter(|f| f.severity == "fail").count() }
 }
@@ -667,12 +807,13 @@ pub fn fix(file: &str, model: &Model, ctx: &Ctx, o: &FixOpts) -> FixResult {
         .collect();
     // Isolated flags (a stray vertex or two) do not open an area for change.
     let flagged = drop_small_clusters(model, &flagged, ctx.th.region_min_bad);
-    let active = dilate(model, &flagged, 6);
+    let active = grow(model, &flagged, widths::MARGIN * ctx.feature, None);
+    let seam = passes(model, &active, widths::SEAM * ctx.feature);
     // Incremental trial scoring: only regions touching a changed vertex (or
     // its one-ring) are re-evaluated; every other vertex keeps its cached
     // energy. Exact, because a vertex's energy depends only on its own
     // region and its neighbors.
-    let score_trial = |wt: &Weights, base: &Weights, base_v: &[f64]| -> (Vec<f64>, Vec<f64>) {
+    let score_trial = |wt: &Weights, base: &Weights, base_v: &[f64]| -> (Vec<f64>, Vec<u8>, Vec<bool>) {
         let mut dirty_r = vec![false; ctx.regions.len()];
         for v in 0..model.nverts() {
             if wt[v] != base[v] {
@@ -685,8 +826,7 @@ pub fn fix(file: &str, model: &Model, ctx: &Ctx, o: &FixOpts) -> FixResult {
         let mask: Vec<bool> = (0..model.nverts()).map(|v| dirty_r[ctx.vregion[v] as usize]).collect();
         let part = evaluate_partial(model, ctx, wt, &mask);
         let e: Vec<f64> = (0..model.nverts()).map(|v| if mask[v] { part.energy[v] } else { base_v[v] }).collect();
-        let re = region_energy_of(ctx, &e);
-        (e, re)
+        (region_energy_of(ctx, &e), part.flags, dirty_r)
     };
     let mut cands: Vec<Candidate> = Vec::new();
     // Candidates are scored as they will be applied: only on the active
@@ -699,7 +839,7 @@ pub fn fix(file: &str, model: &Model, ctx: &Ctx, o: &FixOpts) -> FixResult {
                 Candidate { name: String::new(), w: model.weights.clone(), region_e: Vec::new() },
                 Candidate { name: String::new(), w: w.clone(), region_e: Vec::new() },
             ];
-            blend(model, ctx, &pair, &vec![1; nr], &active, 3)
+            blend(model, ctx, &pair, &vec![1; nr], &active, seam)
         };
         let (_, region_e) = score(&local);
         cands.push(Candidate { name, w, region_e });
@@ -728,27 +868,37 @@ pub fn fix(file: &str, model: &Model, ctx: &Ctx, o: &FixOpts) -> FixResult {
     // carry no weight in the input); the helper band weights them, alone
     // and refined by optimize (helpers.rs).
     if !model.skel.helpers.is_empty() {
-        let bw = crate::helpers::band(model, &model.weights);
-        if o.methods.contains(&Method::Optimize) {
-            let (ev_b, _) = score(&bw);
-            push("helper-band+optimize".into(), optimize(model, ctx, &bw, &ev_b), &mut cands);
+        // How wide an armpit or groin band should be depends on the body
+        // and the rig (wider trades stretch for collapse), so three widths
+        // are scored and the pick keeps whichever repairs best.
+        for (tag, width) in [("", 1.0), ("-narrow", 0.7), ("-wide", 1.4)] {
+            let bw = crate::helpers::band(model, ctx, &model.weights, width);
+            if o.methods.contains(&Method::Optimize) {
+                let (ev_b, _) = score(&bw);
+                push(format!("helper-band{tag}+optimize"), optimize(model, ctx, &bw, &ev_b), &mut cands);
+            }
+            push(format!("helper-band{tag}"), bw, &mut cands);
         }
-        push("helper-band".into(), bw, &mut cands);
     }
     for (name, other) in &o.external {
         push(format!("external:{name}"), external(model, ctx, other, match_dist), &mut cands);
     }
 
-    let orig_e = cands[0].region_e.clone();
-    let orig_v = evaluate_with(model, ctx, &model.weights, false).energy;
-    let mut cur_v = orig_v.clone();
-    let mut choice = vec![0usize; nr];
-    let mut w = model.weights.clone();
-    let mut cur_e = orig_e.clone();
-
-    // Greedy, worst region first: take the best-scoring candidate for that
-    // region whose blended result lowers the total and leaves no region
-    // worse than the input.
+    // -------------------------------------------------------------- picking
+    // Moves: one candidate on a set of regions, measured alone against the
+    // input (pick.rs). The search over plans is exact, so the result never
+    // depends on visiting order and a better candidate never scores worse.
+    let orig_ev = evaluate_with(model, ctx, &model.weights, false);
+    let orig_v = orig_ev.energy.clone();
+    let orig_e = region_energy_of(ctx, &orig_v);
+    let mut size = vec![0.0f64; nr];
+    for &r in &ctx.vregion {
+        size[r as usize] += 1.0;
+    }
+    let had_fail: Vec<bool> =
+        ctx.regions.iter().map(|r| rep0.findings.iter().any(|f| f.severity == "fail" && f.region == r.name)).collect();
+    let base_counts = flag_counts(ctx, &orig_ev.flags, None);
+    let (fail_at, limit) = fail_limits(model, ctx, &had_fail);
     // Region adjacency (regions sharing a mesh edge).
     let mut adjr = vec![std::collections::BTreeSet::new(); nr];
     for e in &model.edges {
@@ -758,119 +908,341 @@ pub fn fix(file: &str, model: &Model, ctx: &Ctx, o: &FixOpts) -> FixResult {
             adjr[b].insert(a);
         }
     }
-    // A region may get at most this much worse than the input while its
-    // neighbor is repaired (seams); the total must still drop.
-    let slack = std::cell::Cell::new(0.01);
-    let tolerated = |k: usize| orig_e[k] * 1.1 + slack.get();
-    let greedy = |cands: &[Candidate], choice: &mut Vec<usize>, w: &mut Weights, cur_e: &mut Vec<f64>, cur_v: &mut Vec<f64>| {
-        let change: Vec<Vec<f64>> = cands
-            .iter()
-            .map(|c| {
-                let mut sum = vec![0.0; nr];
-                let mut cnt = vec![0usize; nr];
-                for v in 0..model.nverts() {
-                    if active[v] {
-                        let r = ctx.vregion[v] as usize;
-                        sum[r] += l1(&c.w[v], &model.weights[v]);
-                        cnt[r] += 1;
+    // Region sets a move may cover, per failing region: alone, with its
+    // failing neighbors, with all neighbors (a fault across a joint spans
+    // two regions), its group of failing regions (failing regions within
+    // two steps of each other: both thighs across the hips), and that
+    // group with all their neighbors. Only active vertices ever change.
+    let mut sets: std::collections::BTreeSet<Vec<usize>> = std::collections::BTreeSet::new();
+    let near_all = |r: usize| -> Vec<usize> { std::iter::once(r).chain(adjr[r].iter().copied()).collect() };
+    for r in (0..nr).filter(|&r| failing[r]) {
+        let near_fail: Vec<usize> = std::iter::once(r).chain(adjr[r].iter().copied().filter(|&k| failing[k])).collect();
+        let mut group = vec![r];
+        let mut i = 0;
+        while i < group.len() {
+            let around = near_all(group[i]);
+            let join: Vec<usize> =
+                (0..nr).filter(|&k| failing[k] && !group.contains(&k) && near_all(k).iter().any(|x| around.contains(x))).collect();
+            group.extend(join);
+            i += 1;
+        }
+        let mut wide: Vec<usize> = group.iter().flat_map(|&g| near_all(g)).collect();
+        wide.sort_unstable();
+        wide.dedup();
+        for mut s in [vec![r], near_fail, near_all(r), group, wide] {
+            s.sort_unstable();
+            sets.insert(s);
+        }
+    }
+    let debug = std::env::var_os("WF_DEBUG").is_some();
+    // The state moves are measured against: the input at first, the
+    // current plan in the refinement rounds.
+    struct Base {
+        choice: Vec<usize>,
+        w: Weights,
+        v: Vec<f64>,
+        e: Vec<f64>,
+        counts: Vec<[i64; crate::pick::NFLAG]>,
+        change: f64,
+    }
+    let base_of = |choice: Vec<usize>, w: Weights| -> Base {
+        let ev = evaluate_with(model, ctx, &w, false);
+        let e = region_energy_of(ctx, &ev.energy);
+        let counts = flag_counts(ctx, &ev.flags, None);
+        let change = (0..model.nverts()).map(|v| l1(&w[v], &model.weights[v])).sum();
+        Base { choice, w, v: ev.energy, e, counts, change }
+    };
+    let input_base = Base {
+        choice: vec![0; nr],
+        w: model.weights.clone(),
+        v: orig_v.clone(),
+        e: orig_e.clone(),
+        counts: base_counts.clone(),
+        change: 0.0,
+    };
+    let measure = |cands: &[Candidate], c: usize, base: &Base| -> Vec<crate::pick::Move> {
+        sets.iter()
+            .filter(|members| members.iter().any(|&k| base.choice[k] != c))
+            .map(|members| {
+                let mut trial = base.choice.clone();
+                for &k in members {
+                    trial[k] = c;
+                }
+                let wt = blend(model, ctx, cands, &trial, &active, seam);
+                let (re, flags, dirty) = score_trial(&wt, &base.w, &base.v);
+                let delta: Vec<(usize, f64)> = (0..nr).filter(|&k| dirty[k]).map(|k| (k, re[k] - base.e[k])).collect();
+                let counts = flag_counts(ctx, &flags, Some(&dirty));
+                let mut fl = Vec::new();
+                for k in (0..nr).filter(|&k| dirty[k]) {
+                    for f in 0..crate::pick::NFLAG {
+                        let d = counts[k][f] - base.counts[k][f];
+                        if d != 0 {
+                            fl.push((k, f, d));
+                        }
                     }
                 }
-                sum.iter().zip(&cnt).map(|(s, &n)| s / n.max(1) as f64).collect()
+                // Weight change vs the input added by this move (0 if it
+                // brings the weights back toward the input).
+                let change: f64 = (0..model.nverts()).map(|v| l1(&wt[v], &model.weights[v])).sum::<f64>() - base.change;
+                crate::pick::Move { cand: c, members: members.clone(), delta, flags: fl, change: change.max(0.0) }
             })
-            .collect();
-        let mut order: Vec<usize> = (0..nr).filter(|&r| failing[r]).collect();
-        order.sort_by(|&a, &b| cur_e[b].partial_cmp(&cur_e[a]).unwrap().then(a.cmp(&b)));
-        for r in order {
-            let mut opts: Vec<usize> = (1..cands.len()).filter(|&c| c != choice[r] && cands[c].region_e[r] < cur_e[r] - 1e-9).collect();
-            // Smallest edit first among candidates about as good as the
-            // best; the rest by score.
-            let best = opts.iter().map(|&c| cands[c].region_e[r]).fold(f64::MAX, f64::min);
-            let good = |c: usize| cands[c].region_e[r] <= best + (0.25 * best).max(0.01);
-            opts.sort_by(|&a, &b| {
-                (!good(a), if good(a) { change[a][r] } else { cands[a].region_e[r] })
-                    .partial_cmp(&(!good(b), if good(b) { change[b][r] } else { cands[b].region_e[r] }))
-                    .unwrap()
-                    .then(a.cmp(&b))
-            });
-            // The region alone, with its failing neighbors, and with all
-            // neighbors (a fault across a joint spans two regions; only
-            // active vertices near the flags ever change).
-            let near_fail: Vec<usize> = std::iter::once(r).chain(adjr[r].iter().copied().filter(|&k| failing[k])).collect();
-            let near_all: Vec<usize> = std::iter::once(r).chain(adjr[r].iter().copied()).collect();
-            for c in opts {
-                let mut sets: Vec<&[usize]> = vec![&near_fail[..1]];
-                if near_fail.len() > 1 {
-                    sets.push(&near_fail[..]);
-                }
-                if near_all.len() > near_fail.len() {
-                    sets.push(&near_all[..]);
-                }
-                // Best valid region set for this candidate.
-                let mut best: Option<(f64, Vec<usize>, Weights, Vec<f64>, Vec<f64>)> = None;
-                for members in sets {
-                    let mut trial = choice.clone();
-                    for &k in members {
-                        trial[k] = c;
-                    }
-                    let wt = blend(model, ctx, cands, &trial, &active, 3);
-                    let (ev_t, re) = score_trial(&wt, w, cur_v);
-                    let total: f64 = re.iter().sum();
-                    let total_ok = total < cur_e.iter().sum::<f64>() - 1e-9;
-                    let none_worse = (0..nr).all(|k| re[k] <= tolerated(k));
-                    if std::env::var_os("WF_DEBUG").is_some() {
-                        eprintln!(
-                            "try {} <- {} ({} regions): total {:.4} -> {total:.4}, region {:.4} -> {:.4}",
-                            ctx.regions[r].name,
-                            cands[c].name,
-                            members.len(),
-                            cur_e.iter().sum::<f64>(),
-                            cur_e[r],
-                            re[r]
-                        );
-                    }
-                    // Only real repairs, no polishing of what already works.
-                    let meaningful = re[r] < cur_e[r] - (0.2 * cur_e[r]).max(0.005);
-                    if total_ok && none_worse && meaningful && best.as_ref().is_none_or(|b| total < b.0) {
-                        best = Some((total, trial, wt, re, ev_t));
-                    }
-                }
-                if let Some((_, trial, wt, re, ev_t)) = best {
-                    *choice = trial;
-                    *w = wt;
-                    *cur_e = re;
-                    *cur_v = ev_t;
-                    break;
+            .collect()
+    };
+    // Search order: outward from the worst failing region along region
+    // adjacency, so moves that conflict are decided next to each other.
+    let mut by_e: Vec<usize> = (0..nr).filter(|&r| failing[r]).collect();
+    by_e.sort_by(|&a, &b| orig_e[b].partial_cmp(&orig_e[a]).unwrap().then(a.cmp(&b)));
+    let mut anchors: Vec<usize> = Vec::new();
+    let mut seen = vec![false; nr];
+    for &start in &by_e {
+        if seen[start] {
+            continue;
+        }
+        let mut queue = std::collections::VecDeque::from([start]);
+        seen[start] = true;
+        while let Some(r) = queue.pop_front() {
+            if failing[r] {
+                anchors.push(r);
+            }
+            for &k in &adjr[r] {
+                if !seen[k] {
+                    seen[k] = true;
+                    queue.push_back(k);
                 }
             }
         }
-    };
-    greedy(&cands, &mut choice, &mut w, &mut cur_e, &mut cur_v);
-
-    // Method 4 starts from the best mix so far, then gets its own pass.
-    if o.methods.contains(&Method::Optimize) {
-        let (ev_mix, _) = score(&w);
-        let opt = optimize(model, ctx, &w, &ev_mix);
-        push("optimize".into(), opt, &mut cands);
-        // Re-anchor: blends now combine the chosen candidates with optimize.
-        greedy(&cands, &mut choice, &mut w, &mut cur_e, &mut cur_v);
     }
-
-    let mut ev = evaluate(model, ctx, &w);
-    let mut rep1 = build(file, model, ctx, &ev);
-    // Hard rule: no region may gain a failing finding it did not have.
+    let problem_at = |base: &Base, moves: Vec<crate::pick::Move>, slack: f64| crate::pick::Problem {
+        orig: base.e.clone(),
+        size: size.clone(),
+        // Rules stay relative to the input: caps on its energies, no
+        // region gains a failing finding it did not have.
+        cap: orig_e.iter().map(|e| e * 1.1 + slack).collect(),
+        counts: base.counts.clone(),
+        fail_at: fail_at.clone(),
+        limit: limit.clone(),
+        anchors: anchors.clone(),
+        moves,
+        gate_first: true,
+        edit_cost: EDIT_MU / size.iter().sum::<f64>().max(1.0),
+        min_gain: 0.2,
+    };
+    let problem = |moves: Vec<crate::pick::Move>, slack: f64| problem_at(&input_base, moves, slack);
+    let apply = |cands: &[Candidate], p: &crate::pick::Problem, plan: &crate::pick::Plan, from: &[usize]| -> (Vec<usize>, Weights) {
+        let mut choice = from.to_vec();
+        for &mi in &plan.moves {
+            for &k in &p.moves[mi].members {
+                choice[k] = p.moves[mi].cand;
+            }
+        }
+        let w = blend(model, ctx, cands, &choice, &active, seam);
+        (choice, w)
+    };
+    // Moves measured apart can interact where they meet, so the few best
+    // plans are scored on the mesh and the best of those is kept.
+    let real = |w: &Weights, gate_first: bool| -> (i64, f64) {
+        let ev = evaluate_with(model, ctx, w, false);
+        let re = region_energy(ctx, &ev);
+        let mut p = problem(Vec::new(), 0.0);
+        p.gate_first = gate_first;
+        let change: f64 = (0..model.nverts()).map(|v| l1(&w[v], &model.weights[v])).sum();
+        (p.fails(&flag_counts(ctx, &ev.flags, None)), crate::pick::energy_of(&size, &re) + p.edit_cost * change)
+    };
+    let choose = |cands: &[Candidate], p: &crate::pick::Problem, tag: &str, from: &[usize]| -> (Vec<usize>, Weights, (i64, f64), bool) {
+        let plans = crate::pick::pick_top(p, 4);
+        let mut best: Option<(Vec<usize>, Weights, (i64, f64))> = None;
+        for plan in &plans {
+            let (c, wt) = apply(cands, p, plan, from);
+            let r = real(&wt, p.gate_first);
+            if debug {
+                eprintln!(
+                    "{tag}: {} moves, predicted ({}, {:.4}), real ({}, {:.4}), exact {}",
+                    plan.moves.len(),
+                    plan.fails,
+                    plan.energy,
+                    r.0,
+                    r.1,
+                    plan.exact
+                );
+            }
+            if best.as_ref().is_none_or(|b| r.0 < b.2.0 || (r.0 == b.2.0 && r.1 < b.2.1 - 1e-12)) {
+                best = Some((c, wt, r));
+            }
+        }
+        let (c, w, r) = best.unwrap();
+        (c, w, r, plans[0].exact)
+    };
+    let mut moves: Vec<crate::pick::Move> = (1..cands.len()).flat_map(|c| measure(&cands, c, &input_base)).collect();
+    let p1 = problem(moves.clone(), 0.01);
+    let (mut choice, mut w, mut best_real, mut exact) = choose(&cands, &p1, "pick 1", &input_base.choice);
+    // Every stage's result is judged on the mesh; the fix is the best one
+    // that breaks no rule (passes the gate first, then score), so a later
+    // stage never undoes an earlier good one. Hard rule: no region may gain
+    // a failing finding it did not have.
     let new_fails = |rep: &Report| {
         rep.findings.iter().any(|f| f.severity == "fail" && !rep0.findings.iter().any(|g| g.severity == "fail" && g.region == f.region))
     };
-    if new_fails(&rep1) {
-        slack.set(0.002);
-        choice = vec![0; nr];
-        w = model.weights.clone();
-        cur_e = orig_e.clone();
-        cur_v = orig_v.clone();
-        greedy(&cands, &mut choice, &mut w, &mut cur_e, &mut cur_v);
-        ev = evaluate(model, ctx, &w);
-        rep1 = build(file, model, ctx, &ev);
+    type Kept = (Vec<usize>, Weights, Eval, Report);
+    let mut kept: Option<Kept> = None;
+    let consider = |kept: &mut Option<Kept>, choice: &[usize], w: &Weights| -> bool {
+        let ev = evaluate(model, ctx, w);
+        let rep = build(file, model, ctx, &ev);
+        if std::env::var_os("WF_DEBUG").is_some() {
+            let gained: Vec<String> = rep
+                .findings
+                .iter()
+                .filter(|f| f.severity == "fail" && !rep0.findings.iter().any(|g| g.severity == "fail" && g.region == f.region))
+                .map(|f| format!("{} {} {}", f.region, f.code, f.verts))
+                .collect();
+            eprintln!("stage: score {:.1}, pass {}, gains {:?}", rep.score, rep.pass, gained);
+        }
+        if new_fails(&rep) {
+            return false;
+        }
+        if kept.as_ref().is_none_or(|k| (rep.pass, rep.score) > (k.3.pass, k.3.score)) {
+            *kept = Some((choice.to_vec(), w.clone(), ev, rep));
+        }
+        true
+    };
+    let mut valid = consider(&mut kept, &choice, &w);
+
+    // Method 4 starts from the best mixes so far: the plan picked for the
+    // gate and the plan with the lowest score energy (it often clears the
+    // last findings from there), then everything is picked again with them
+    // as more candidates (the earlier plans stay possible).
+    if o.methods.contains(&Method::Optimize) {
+        let mut seeds = vec![w.clone()];
+        // When nothing passes the gate, the score-only pick is the same
+        // search; run it only when the gate pick passes.
+        if best_real.0 == 0 {
+            let mut by_energy = problem(moves.clone(), 0.01);
+            by_energy.gate_first = false;
+            let (_, we, _, e) = choose(&cands, &by_energy, "pick 1 (score only)", &input_base.choice);
+            exact &= e;
+            if we != w {
+                seeds.push(we);
+            }
+        }
+        for (k, seed) in seeds.iter().enumerate() {
+            let (ev_mix, _) = score(seed);
+            let opt = optimize(model, ctx, seed, &ev_mix);
+            push(if k == 0 { "optimize".into() } else { "optimize(score)".into() }, opt, &mut cands);
+            moves.extend(measure(&cands, cands.len() - 1, &input_base));
+        }
+        let p2 = problem(moves.clone(), 0.01);
+        let (c2, w2, r2, e2) = choose(&cands, &p2, "pick 2", &input_base.choice);
+        exact &= e2;
+        let v2 = consider(&mut kept, &c2, &w2);
+        if (v2 && !valid) || (v2 == valid && (r2.0 < best_real.0 || (r2.0 == best_real.0 && r2.1 < best_real.1 - 1e-12))) {
+            choice = c2;
+            w = w2;
+            best_real = r2;
+            valid = v2;
+        }
     }
+
+    // Refinement: moves measured apart miss how neighboring repairs meet
+    // (seams between two candidates). Re-measure every move against the
+    // current plan (including putting regions back to the input) and pick
+    // again, exactly; go on while the result keeps the rules and scores
+    // better on the mesh, or repairs a rule the current plan broke. Rules
+    // stay relative to the input.
+    for round in 0..4 {
+        let base = base_of(choice.clone(), w.clone());
+        let moves_r: Vec<crate::pick::Move> = (0..cands.len()).flat_map(|c| measure(&cands, c, &base)).collect();
+        let mut p = problem_at(&base, moves_r, 0.01);
+        p.min_gain = 0.0;
+        let (c3, w3, r3, e3) = choose(&cands, &p, &format!("refine {round}"), &base.choice);
+        if c3 == choice {
+            break;
+        }
+        let v3 = consider(&mut kept, &c3, &w3);
+        let gain = r3.0 < best_real.0 || (r3.0 == best_real.0 && r3.1 < best_real.1 - 1e-9);
+        // Follow a better-scoring plan even if it breaks a rule (the next
+        // round can repair it); the kept result only ever takes plans that
+        // keep the rules.
+        if !(gain || (v3 && !valid)) {
+            break;
+        }
+        exact &= e3;
+        choice = c3;
+        w = w3;
+        best_real = r3;
+        valid = v3;
+    }
+
+    // The last plan scores best on the mesh but breaks a rule: measured
+    // apart, its repairs interact (a region between two repairs gains a
+    // finding). Drop repairs one at a time, each time the one whose removal
+    // leaves the fewest such regions and then the lowest energy, and offer
+    // the first rule-abiding result. A repair is a connected set of regions
+    // on one candidate.
+    let count_new = |rep: &Report| -> usize {
+        let mut regions: Vec<&str> = rep
+            .findings
+            .iter()
+            .filter(|f| f.severity == "fail" && !rep0.findings.iter().any(|g| g.severity == "fail" && g.region == f.region))
+            .map(|f| f.region.as_str())
+            .collect();
+        regions.sort_unstable();
+        regions.dedup();
+        regions.len()
+    };
+    if new_fails(&build(file, model, ctx, &evaluate(model, ctx, &w))) {
+        let mut cur = choice.clone();
+        loop {
+            let mut units: Vec<Vec<usize>> = Vec::new();
+            let mut seen = vec![false; nr];
+            for r in 0..nr {
+                if cur[r] == 0 || seen[r] {
+                    continue;
+                }
+                let mut unit = vec![r];
+                seen[r] = true;
+                let mut i = 0;
+                while i < unit.len() {
+                    for &k in &adjr[unit[i]] {
+                        if !seen[k] && cur[k] == cur[r] {
+                            seen[k] = true;
+                            unit.push(k);
+                        }
+                    }
+                    i += 1;
+                }
+                units.push(unit);
+            }
+            if units.is_empty() {
+                break;
+            }
+            let mut best: Option<((usize, f64), Vec<usize>, Weights)> = None;
+            for unit in &units {
+                let mut trial = cur.clone();
+                for &k in unit {
+                    trial[k] = 0;
+                }
+                let wt = blend(model, ctx, &cands, &trial, &active, seam);
+                let ev_t = evaluate_with(model, ctx, &wt, false);
+                let rep_t = build(file, model, ctx, &ev_t);
+                let key = (count_new(&rep_t), crate::pick::energy_of(&size, &region_energy(ctx, &ev_t)));
+                if best.as_ref().is_none_or(|b| key.0 < b.0.0 || (key.0 == b.0.0 && key.1 < b.0.1)) {
+                    best = Some((key, trial, wt));
+                }
+            }
+            let (key, trial, wt) = best.unwrap();
+            if debug {
+                eprintln!("drop: {} regions gain a failing finding, energy {:.4}", key.0, key.1);
+            }
+            cur = trial;
+            if key.0 == 0 {
+                consider(&mut kept, &cur, &wt);
+                break;
+            }
+        }
+    }
+    let (mut choice, mut w, mut ev, mut rep1) = match kept {
+        Some(k) => k,
+        None => (vec![0; nr], model.weights.clone(), evaluate(model, ctx, &model.weights), rep0.clone()),
+    };
     if rep1.score < rep0.score || new_fails(&rep1) {
         w = model.weights.clone();
         ev = ev0;
@@ -899,6 +1271,7 @@ pub fn fix(file: &str, model: &Model, ctx: &Ctx, o: &FixOpts) -> FixResult {
         before: summary(&rep0),
         after: summary(&rep1),
         improved: rep1.score > rep0.score,
+        pick_exact: exact,
         verts_changed: changes.iter().filter(|&&c| c > 1e-4).count(),
         mean_l1_change: (changes.iter().sum::<f64>() / model.nverts().max(1) as f64 * 1e6).round() / 1e6,
         max_influences: w.iter().map(Vec::len).max().unwrap_or(0),

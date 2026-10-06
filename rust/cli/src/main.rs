@@ -22,10 +22,14 @@ USAGE:
   weights fixture <fault|all> --out <dir>
 
 FIX:
-  Builds candidates (the input is always candidate 0), scores each on the
-  same poses, keeps the best per failing region, blends at seams, and
-  never writes anything worse than the input in any region. Writes
-  <out>.report.json (or --report path) with before/after numbers.
+  Builds candidates (the input is always candidate 0), measures each one
+  on sets of failing regions (only their flagged area changes, blended
+  into the input at seams; bands measured in limb radii, not edge rings),
+  and picks the plan that passes the gate if any can, then scores best,
+  by an exact search: a better candidate never picks a worse plan. Never
+  writes anything worse than the input, and no region gains a failing
+  finding. Writes <out>.report.json (or --report path) with before/after
+  numbers (`pick_exact`: false if the search hit its node budget).
   --method      auto (every method, default), or one or more of
                 smooth,geodesic,transfer,optimize (comma-separated)
   --source      known-good rigged base to transfer weights from
@@ -45,7 +49,7 @@ COMMON OPTIONS:
 
   -h, --help          this text;  -V, --version  print the version
 
-ENV: WF_DEBUG=1 traces fix's region trials on stderr. SKINTOKENS_BIN: see --skintokens.
+ENV: WF_DEBUG=1 traces fix's region pick and band widths on stderr. SKINTOKENS_BIN: see --skintokens.
 EXIT: 0 clean (fix: output passes), 1 faults found, 2 usage/IO error.
 ";
 

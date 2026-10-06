@@ -53,3 +53,21 @@ fn better_external_candidate_does_not_score_worse() {
         }
     }
 }
+
+/// Guaranteed by construction (`fix` also runs without external candidates
+/// and keeps the better): any external candidate, even a bad one, never
+/// leaves the fix worse than no candidate at all.
+#[test]
+fn an_external_candidate_never_hurts() {
+    let f = fixtures::build("elbow_collapse");
+    let m = Model::from_glb(fixtures::to_glb(&f)).unwrap();
+    let ctx = Ctx::new(&m, &CtxOpts::default());
+    let alone = fix("elbow_collapse", &m, &ctx, &FixOpts::default()).fix.after.score;
+    for bad in ["bleed", "cape_wrong_bone", "noise"] {
+        let cand = Model::from_glb(fixtures::to_glb(&fixtures::build(bad))).unwrap();
+        let o = FixOpts { external: vec![(bad.into(), &cand)], ..FixOpts::default() };
+        let r = fix("elbow_collapse", &m, &ctx, &o);
+        eprintln!("elbow_collapse + {bad} candidate: {:.1} (alone {alone:.1})", r.fix.after.score);
+        assert!(r.fix.after.score >= alone);
+    }
+}

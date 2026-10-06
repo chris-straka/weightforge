@@ -106,6 +106,9 @@ pub struct FixReport {
     /// The region pick searched every plan (false: it hit its node budget
     /// and kept the best plan found; only on rigs with many failing regions).
     pub pick_exact: bool,
+    /// False when the run without the external candidates scored better
+    /// and was kept (`fix`).
+    pub external_kept: bool,
     pub verts_changed: usize,
     pub mean_l1_change: f64,
     pub max_influences: usize,
@@ -787,7 +790,27 @@ fn summary(r: &Report) -> Summary {
     Summary { score: r.score, pass: r.pass, fails: r.findings.iter().filter(|f| f.severity == "fail").count() }
 }
 
+/// Repairs the weights (see the module docs). With external candidates
+/// it also runs without them and keeps the better result (passes the gate
+/// first, then score): an extra candidate never makes the fix worse than
+/// not having it, even where the region pick runs out of search budget.
 pub fn fix(file: &str, model: &Model, ctx: &Ctx, o: &FixOpts) -> FixResult {
+    let with = fix_once(file, model, ctx, o);
+    if o.external.is_empty() {
+        return with;
+    }
+    let plain = FixOpts { methods: o.methods.clone(), source: o.source, external: Vec::new(), all_regions: o.all_regions };
+    let mut without = fix_once(file, model, ctx, &plain);
+    let key = |r: &FixResult| (r.report_after.pass, r.report_after.score);
+    if key(&without) > key(&with) {
+        without.fix.methods = with.fix.methods.clone();
+        without.fix.external_kept = false;
+        return without;
+    }
+    with
+}
+
+fn fix_once(file: &str, model: &Model, ctx: &Ctx, o: &FixOpts) -> FixResult {
     let ev0 = evaluate(model, ctx, &model.weights);
     let rep0 = build(file, model, ctx, &ev0);
     let score = |w: &Weights| -> (Eval, Vec<f64>) {
@@ -1272,6 +1295,7 @@ pub fn fix(file: &str, model: &Model, ctx: &Ctx, o: &FixOpts) -> FixResult {
         after: summary(&rep1),
         improved: rep1.score > rep0.score,
         pick_exact: exact,
+        external_kept: !o.external.is_empty(),
         verts_changed: changes.iter().filter(|&&c| c > 1e-4).count(),
         mean_l1_change: (changes.iter().sum::<f64>() / model.nverts().max(1) as f64 * 1e6).round() / 1e6,
         max_influences: w.iter().map(Vec::len).max().unwrap_or(0),

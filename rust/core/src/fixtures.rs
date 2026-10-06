@@ -183,6 +183,17 @@ fn chain_weights(c: &Chain, s: f64) -> VW {
 }
 
 pub fn build(fault: &str) -> Fixture {
+    build_at(fault, 1.0)
+}
+
+/// The mannequin at another mesh density: `density` scales the number of
+/// rings and segments per unit length (1.0 = the standard fixture, about
+/// 4.9k vertices; 2.0 = twice as many edges along and around each limb).
+/// Weights are defined in space (blend widths in metres), so every density
+/// is the same character.
+pub fn build_at(fault: &str, density: f64) -> Fixture {
+    let ds = |x: f64| x / density;
+    let seg = |n: usize| ((n as f64 * density).round() as usize).max(6);
     let bones = skeleton();
     let mut pos = Vec::new();
     let mut tris = Vec::new();
@@ -195,14 +206,14 @@ pub fn build(fault: &str) -> Fixture {
         bones: vec![(j("DEF-spine"), 0.0), (j("DEF-spine.001"), 0.20), (j("DEF-spine.002"), 0.33), (j("DEF-spine.003"), 0.47)],
         bands: vec![0.04, 0.04, 0.04],
     });
-    tube(&mut pos, &mut tris, &mut tags, 0, &[v3(0.0, 0.85, 0.0), v3(0.0, 1.5, 0.0)], v3(1.0, 0.0, 0.0), 0.025, 24, &|s| {
+    tube(&mut pos, &mut tris, &mut tags, 0, &[v3(0.0, 0.85, 0.0), v3(0.0, 1.5, 0.0)], v3(1.0, 0.0, 0.0), ds(0.025), seg(24), &|s| {
         let y = 0.85 + s;
         let w = 0.15 + 0.02 * ((y - 1.1) * 4.0).sin();
         (w, 0.1)
     });
     // Neck + head.
     chains.push(Chain { bones: vec![(j("DEF-neck"), 0.0), (j("DEF-head"), 0.12)], bands: vec![0.03] });
-    tube(&mut pos, &mut tris, &mut tags, 1, &[v3(0.0, 1.43, 0.0), v3(0.0, 1.8, 0.0)], v3(1.0, 0.0, 0.0), 0.02, 20, &|s| {
+    tube(&mut pos, &mut tris, &mut tags, 1, &[v3(0.0, 1.43, 0.0), v3(0.0, 1.8, 0.0)], v3(1.0, 0.0, 0.0), ds(0.02), seg(20), &|s| {
         let y = 1.43 + s;
         let r = if y < 1.56 { 0.05 } else { 0.05 + 0.055 * (((y - 1.56) / 0.24) * std::f64::consts::PI).sin().max(0.0).sqrt() };
         (r.max(0.02), r.max(0.02))
@@ -227,7 +238,7 @@ pub fn build(fault: &str) -> Fixture {
             ],
             bands: vec![0.07, 0.05, 0.035],
         });
-        tube(&mut pos, &mut tris, &mut tags, ci, &[start, sh1, el, wr, tip], v3(0.0, 0.0, 1.0), 0.015, 16, &|s| {
+        tube(&mut pos, &mut tris, &mut tags, ci, &[start, sh1, el, wr, tip], v3(0.0, 0.0, 1.0), ds(0.015), seg(16), &|s| {
             let u = s - s_sh;
             let r = if u < 0.0 {
                 0.055
@@ -254,7 +265,7 @@ pub fn build(fault: &str) -> Fixture {
             ],
             bands: vec![0.07, 0.06, 0.04],
         });
-        tube(&mut pos, &mut tris, &mut tags, ci, &[hip_top, hip, knee, ankle, toe], v3(0.0, 0.0, 1.0), 0.02, 16, &|s| {
+        tube(&mut pos, &mut tris, &mut tags, ci, &[hip_top, hip, knee, ankle, toe], v3(0.0, 0.0, 1.0), ds(0.02), seg(16), &|s| {
             let r = if s < 0.47 {
                 0.085 - 0.02 * (s / 0.47)
             } else if s < 0.88 {
@@ -265,11 +276,22 @@ pub fn build(fault: &str) -> Fixture {
             (r, r)
         });
     }
+    if fault == "ring_bands" {
+        // Every joint blend one edge ring wide, as ML riggers do: the
+        // blend narrows as the mesh gets denser (not in FAULTS; used by the
+        // density test).
+        let ring = [0.025, 0.02, 0.015, 0.02, 0.015, 0.02];
+        for (c, &r) in chains.iter_mut().zip(&ring) {
+            for b in c.bands.iter_mut() {
+                *b = ds(r);
+            }
+        }
+    }
     let body_tags = tags.clone();
     let mut body_w: Weights = body_tags.iter().map(|t| chain_weights(&chains[t.chain], t.s)).collect();
 
     // Cape: open sheet behind the back.
-    let (nx, ny) = (12usize, 22usize);
+    let (nx, ny) = (seg(12), seg(22));
     let mut cape_pos = Vec::new();
     let mut cape_tris = Vec::new();
     for iy in 0..=ny {

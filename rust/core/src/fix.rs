@@ -159,8 +159,8 @@ pub fn smooth(model: &Model, w: &Weights, mask: &[bool], iters: usize, lambda: f
 pub mod widths {
     /// Margin around flagged vertices that a fix may change (6 rings).
     pub const MARGIN: f64 = 2.8;
-    /// Seam blend between a candidate and the input, as a Gaussian width
-    /// (3 smoothing passes).
+    /// Seam blend between candidates (and the input): the Gaussian width
+    /// of `blend` (what 3 smoothing passes spread on the test mannequin).
     pub const SEAM: f64 = 0.4;
     /// Clean-up: margin around tears and collapses (3 rings) and its
     /// smoothing width (12 passes).
@@ -178,6 +178,15 @@ pub mod widths {
 /// travelling only through `within` (everywhere when `None`). The metric
 /// counterpart of `dilate`.
 pub fn grow(model: &Model, seeds: &[bool], dist: f64, within: Option<&[bool]>) -> Vec<bool> {
+    distances_within(model, seeds, dist, within).iter().map(|x| x.is_finite()).collect()
+}
+
+/// Rest-pose edge-path distance from `seeds`, infinite beyond `max`.
+pub fn distances(model: &Model, seeds: &[bool], max: f64) -> Vec<f64> {
+    distances_within(model, seeds, max, None)
+}
+
+fn distances_within(model: &Model, seeds: &[bool], max: f64, within: Option<&[bool]>) -> Vec<f64> {
     use std::cmp::Reverse;
     use std::collections::BinaryHeap;
     let n = model.nverts();
@@ -201,13 +210,13 @@ pub fn grow(model: &Model, seeds: &[bool], dist: f64, within: Option<&[bool]>) -
                 continue;
             }
             let du = dv + (model.rest[u] - model.rest[v]).len();
-            if du < d[u] && du <= dist {
+            if du < d[u] && du <= max {
                 d[u] = du;
                 heap.push(Reverse((du.to_bits(), u)));
             }
         }
     }
-    d.iter().map(|x| x.is_finite()).collect()
+    d
 }
 
 /// Smoothing passes (`smooth` with lambda 0.5) that spread a weight like a
@@ -691,40 +700,61 @@ fn l1(a: &VW, b: &VW) -> f64 {
         + b.iter().filter(|e| weight_of(a, e.0) == 0.0).map(|e| e.1).sum::<f64>()
 }
 
-/// Blends per-region candidate choices, smoothing the seams with `passes`
-/// passes (see `passes`).
-fn blend(model: &Model, ctx: &Ctx, cands: &[Candidate], choice: &[usize], active: &[bool], rings: usize) -> Weights {
+/// Standard normal CDF (Abramowitz and Stegun 7.1.26, error < 2e-7).
+fn phi(x: f64) -> f64 {
+    let z = x.abs() / std::f64::consts::SQRT_2;
+    let t = 1.0 / (1.0 + 0.3275911 * z);
+    let poly = t * (0.254829592 + t * (-0.284496736 + t * (1.421413741 + t * (-1.453152027 + t * 1.061405429))));
+    let erf = 1.0 - poly * (-z * z).exp();
+    if x >= 0.0 { 0.5 * (1.0 + erf) } else { 0.5 * (1.0 - erf) }
+}
+
+/// Blends per-region candidate choices across their seams like a Gaussian
+/// blur of width `sigma` (metres), at any mesh density: a vertex keeps
+/// `Phi(s / sigma)` of its own candidate, `s` being its rest-pose edge-path
+/// distance to the nearest vertex assigned otherwise (less half an edge,
+/// where the seam runs), and shares the rest among those other candidates
+/// by the same rule. One bounded Dijkstra per candidate in use; vertices
+/// more than 3 sigma from every seam keep their candidate's weights exactly.
+fn blend(model: &Model, ctx: &Ctx, cands: &[Candidate], choice: &[usize], active: &[bool], sigma: f64) -> Weights {
     let nv = model.nverts();
-    let nc = cands.len();
-    let mut alpha: Vec<Vec<f64>> = (0..nv)
-        .map(|v| {
-            let mut a = vec![0.0; nc];
-            a[if active[v] { choice[ctx.vregion[v] as usize] } else { 0 }] = 1.0;
-            a
-        })
-        .collect();
-    for _ in 0..rings {
-        alpha = (0..nv)
-            .map(|v| {
-                if model.adj[v].is_empty() {
-                    return alpha[v].clone();
-                }
-                let k = model.adj[v].len() as f64;
-                (0..nc).map(|c| 0.5 * alpha[v][c] + 0.5 * model.adj[v].iter().map(|&u| alpha[u as usize][c]).sum::<f64>() / k).collect()
-            })
-            .collect();
+    let assign: Vec<usize> = (0..nv).map(|v| if active[v] { choice[ctx.vregion[v] as usize] } else { 0 }).collect();
+    let mut used: Vec<usize> = assign.clone();
+    used.sort_unstable();
+    used.dedup();
+    if used == [0] {
+        return cands[0].w.clone();
     }
+    let reach = 3.0 * sigma;
+    let dist: Vec<Vec<f64>> =
+        used.par_iter().map(|&c| distances(model, &assign.iter().map(|&a| a == c).collect::<Vec<_>>(), reach)).collect();
     (0..nv)
         .into_par_iter()
         .map(|v| {
-            if alpha[v][0] > 1.0 - 1e-9 {
-                return cands[0].w[v].clone(); // untouched: byte-identical
-            }
-            let mut acc: VW = Vec::new();
-            for c in 0..nc {
-                if alpha[v][c] > 1e-6 {
-                    acc.extend(cands[c].w[v].iter().map(|&(j, x)| (j, x * alpha[v][c])));
+            let own = assign[v];
+            let half = 0.5 * model.adj[v].iter().map(|&u| (model.rest[u as usize] - model.rest[v]).len()).fold(f64::MAX, f64::min);
+            let half = if half.is_finite() { half } else { 0.0 };
+            // Other candidates within reach and how much of each spills here.
+            let mut others: Vec<(usize, f64)> = Vec::new();
+            let mut nearest = f64::INFINITY;
+            for (k, &c) in used.iter().enumerate() {
+                let d = dist[k][v];
+                if c != own && d.is_finite() {
+                    nearest = nearest.min(d);
+                    let x = if sigma > 0.0 { 1.0 - phi((d - half).max(0.0) / sigma) } else { 0.0 };
+                    if x > 1e-6 {
+                        others.push((c, x));
+                    }
                 }
+            }
+            if others.is_empty() {
+                return cands[own].w[v].clone(); // away from seams: exact
+            }
+            let keep = if sigma > 0.0 { phi((nearest - half).max(0.0) / sigma) } else { 1.0 };
+            let total: f64 = others.iter().map(|o| o.1).sum();
+            let mut acc: VW = cands[own].w[v].iter().map(|&(j, y)| (j, y * keep)).collect();
+            for &(c, x) in &others {
+                acc.extend(cands[c].w[v].iter().map(|&(j, y)| (j, y * (1.0 - keep) * x / total)));
             }
             prune_vw(&normalize_vw(acc), 4, 0.01)
         })
@@ -831,7 +861,15 @@ fn fix_once(file: &str, model: &Model, ctx: &Ctx, o: &FixOpts) -> FixResult {
     // Isolated flags (a stray vertex or two) do not open an area for change.
     let flagged = drop_small_clusters(model, &flagged, ctx.th.region_min_bad);
     let active = grow(model, &flagged, widths::MARGIN * ctx.feature, None);
-    let seam = passes(model, &active, widths::SEAM * ctx.feature);
+    let seam = widths::SEAM * ctx.feature;
+    if std::env::var_os("WF_DEBUG").is_some() {
+        eprintln!(
+            "fix: {} verts, {} active, feature {:.4}, seam {seam:.4}",
+            model.nverts(),
+            active.iter().filter(|&&a| a).count(),
+            ctx.feature
+        );
+    }
     // Incremental trial scoring: only regions touching a changed vertex (or
     // its one-ring) are re-evaluated; every other vertex keeps its cached
     // energy. Exact, because a vertex's energy depends only on its own
@@ -1095,7 +1133,13 @@ fn fix_once(file: &str, model: &Model, ctx: &Ctx, o: &FixOpts) -> FixResult {
         let (c, w, r) = best.unwrap();
         (c, w, r, plans[0].exact)
     };
-    let mut moves: Vec<crate::pick::Move> = (1..cands.len()).flat_map(|c| measure(&cands, c, &input_base)).collect();
+    // A candidate is measured only if, applied to the whole repair area, it
+    // improves some failing region: the rest cannot repair anything, and
+    // measuring costs one mesh evaluation per region set. Depends only on
+    // the candidate's own numbers, so a better candidate is never dropped.
+    let useful = |c: &Candidate| (0..nr).any(|r| failing[r] && c.region_e[r] < orig_e[r] - 1e-9);
+    let mut moves: Vec<crate::pick::Move> =
+        (1..cands.len()).filter(|&c| useful(&cands[c])).flat_map(|c| measure(&cands, c, &input_base)).collect();
     let p1 = problem(moves.clone(), 0.01);
     let (mut choice, mut w, mut best_real, mut exact) = choose(&cands, &p1, "pick 1", &input_base.choice);
     // Every stage's result is judged on the mesh; the fix is the best one
@@ -1150,7 +1194,9 @@ fn fix_once(file: &str, model: &Model, ctx: &Ctx, o: &FixOpts) -> FixResult {
             let (ev_mix, _) = score(seed);
             let opt = optimize(model, ctx, seed, &ev_mix);
             push(if k == 0 { "optimize".into() } else { "optimize(score)".into() }, opt, &mut cands);
-            moves.extend(measure(&cands, cands.len() - 1, &input_base));
+            if useful(&cands[cands.len() - 1]) {
+                moves.extend(measure(&cands, cands.len() - 1, &input_base));
+            }
         }
         let p2 = problem(moves.clone(), 0.01);
         let (c2, w2, r2, e2) = choose(&cands, &p2, "pick 2", &input_base.choice);
@@ -1172,7 +1218,10 @@ fn fix_once(file: &str, model: &Model, ctx: &Ctx, o: &FixOpts) -> FixResult {
     // stay relative to the input.
     for round in 0..4 {
         let base = base_of(choice.clone(), w.clone());
-        let moves_r: Vec<crate::pick::Move> = (0..cands.len()).flat_map(|c| measure(&cands, c, &base)).collect();
+        let moves_r: Vec<crate::pick::Move> = (0..cands.len())
+            .filter(|&c| c == 0 || useful(&cands[c]) || base.choice.contains(&c))
+            .flat_map(|c| measure(&cands, c, &base))
+            .collect();
         let mut p = problem_at(&base, moves_r, 0.01);
         p.min_gain = 0.0;
         let (c3, w3, r3, e3) = choose(&cands, &p, &format!("refine {round}"), &base.choice);

@@ -22,9 +22,12 @@ weights fix    hero.glb --out fixed.glb [--method auto|smooth|geodesic|transfer|
 weights compare a.glb b.glb --out ab.png             # same poses side by side, for the inbox
 ```
 
-`fix --method auto` builds several weight candidates, scores each one on the
-same pose set, picks the best per region, blends at region seams, and writes
-a report (`fixed.report.json`) with before/after scores.
+`fix --method auto` builds several weight candidates, measures each on sets
+of failing regions, picks the best plan exactly (gate first, then score; a
+better candidate never picks a worse plan), blends at region seams with
+widths in limb radii (not edge rings), and writes a report
+(`fixed.report.json`) with before/after scores. Since 2026-10-05:
+[`docs/pick-and-bands.md`](docs/pick-and-bands.md).
 
 ## Detection (moving the rig)
 

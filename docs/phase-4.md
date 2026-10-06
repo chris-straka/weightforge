@@ -21,7 +21,10 @@ What exists:
 | F | IMPROVED | 6.8 → 39.8 | 88 → 17 | 33.8 s |
 | G | IMPROVED | 11.9 → 27.3 | 9 → 5 | 7.1 s |
 
-0 worse. None reach PASS: these skeletons have generic `bone_N` names, so
+0 worse. Re-run 2026-10-05 with the exact pick and metric bands: andras
+51.1, bird 35.4, cree 65.0, giraffe 30.9, stalker 66.5 (failing 3 -> 1),
+tira 60.3, carrot 40.0; still 0 worse, none passes
+([pick-and-bands.md](pick-and-bands.md)). None reach PASS: these skeletons have generic `bone_N` names, so
 they get the harsh generic ROM (every bone ±45° on two axes plus twist),
 and UniRig weights are broadly wrong; the right fix for several is a
 re-rig (rigforge/wrapforge), which weightforge does not do by design.

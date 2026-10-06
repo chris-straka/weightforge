@@ -32,16 +32,18 @@ file size (in-place write).
   side of the joint (smoothstep). Restores a standard falloff where the
   input's is missing, too hard, or far too wide.
 
-## Picking (why it is shaped like this)
+## Picking
 
-Greedy, worst failing region first. Each candidate is scored as it would
-be applied: only on the flagged area (clusters of ≥3 flagged verts plus a
-6-ring margin), seam-blended over 3 rings, input elsewhere. For each
-candidate it tries the region alone, with its failing neighbors, and with
-all neighbors (a fault across a joint spans two regions), keeping the best
-valid set. Preference: the smallest edit among candidates within 25% of
-the best score. A move must improve the region by ≥20% (no polishing), the
-total must drop, and no region may get worse than 1.1× its input energy +
-0.01; if any region then gains a failing finding it did not have, the pass
-reruns with no slack, and failing that the input is returned. Candidate 0
-is always the input.
+Replaced on 2026-10-05 by an exact pick over measured moves, with band
+widths in limb radii instead of edge rings: [pick-and-bands.md](pick-and-bands.md).
+The gate above was re-run with it (`cargo test --release`): weight error
+drops 85% (noise), 100% (bleed), 99% (no_elbow_falloff), 91%
+(cape_wrong_bone), 98% (elbow_collapse) and 87% (knee_wide_falloff); every
+fault scores 89.3-89.6 after, clean is byte-identical.
+
+Before that (for the record): greedy, worst failing region first; each
+candidate tried on the region alone, with failing neighbours, and with all
+neighbours; smallest edit among candidates within 25% of the best; a move
+had to improve the region by 20%, lower the total, and leave no region
+worse than 1.1x input + 0.01. A strong candidate could lock in early this
+way, so a better candidate could give a worse fix.

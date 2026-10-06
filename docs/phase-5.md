@@ -8,7 +8,10 @@ best-so-far and routes to the re-rig step). Its
 `tests/test_weights_adapter.py` runs this repo's binary on the bleed
 fixture: check fails → fix 9.7 → 89.6 → recheck passes (5 tests, re-run
 here 2026-10-04: green). Still open: one live `gen character` run on a
-real Tripo rig through to the inbox (owner schedules it).
+real Tripo rig through to the inbox (owner schedules it). Rehearsal
+(2026-10-05, SkinTokens rig): the weights gate now passes for Andras
+(62.7 -> 76.0); the chain then stops after animate, where the game clip
+`attack_3` (arms overhead) fails the recheck ([pick-and-bands.md](pick-and-bands.md)).
 
 - `blender/weightforge/` (GPL, subprocess only): Check Weights (paints
   the `weightforge_bad` color attribute), Pose Sheet (image datablock),

@@ -61,7 +61,7 @@ Meanings and thresholds: [phase-0.md](phase-0.md).
   "input": "rig.glb", "methods": ["smooth", "geodesic", "transfer", "optimize"],
   "before": {"score": 9.7, "pass": false, "fails": 4},
   "after":  {"score": 89.6, "pass": true, "fails": 0},
-  "improved": true, "pick_exact": true, "verts_changed": 225, "mean_l1_change": 0.0123,
+  "improved": true, "pick_exact": true, "external_kept": false, "verts_changed": 225, "mean_l1_change": 0.0123,
   "max_influences": 4,
   "candidates": {"original": 61.0, "despeckle": 70.2, "geodesic-band": 68.0},
   "regions": [
@@ -75,7 +75,8 @@ Meanings and thresholds: [phase-0.md](phase-0.md).
 `pick_exact` (since 2026-10-05): the region pick searched every plan.
 False only when the search hit its node budget (rigs with a dozen or more
 failing regions); the fix is then the best plan found, still never worse
-than the input.
+than the input. `external_kept`: with `--candidate`/`--skintokens`, false
+when the run without them scored better and was written.
 
 ## Custom range of motion
 

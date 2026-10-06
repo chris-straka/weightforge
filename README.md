@@ -45,10 +45,19 @@ per-region scores (0–100) and findings: `D_STRETCH`, `D_VOLUME`,
 
 **fix** builds candidates: the input (always candidate 0), despeckle,
 smooth, geodesic voxel binding, geodesic joint bands, transfer + inpaint,
-optimize (LBS fit to dual-quaternion targets), and any `--candidate`. Each
-is scored on the same poses; the best one replaces only the flagged area of
-each failing region, blended at seams. No region ends worse than the input
-and no region gains a failing finding, or the input comes back unchanged.
+optimize (LBS fit to dual-quaternion targets), and any `--candidate`.
+Each candidate is measured on sets of failing regions (only their flagged
+area changes, blended into the input at the seams), and an exact search
+picks the plan that passes the gate if any can, then scores best
+(`core/src/pick.rs`): a better candidate never picks a worse plan, and an
+external candidate never leaves the fix worse than no candidate.
+Refinement rounds re-measure against the current plan; every stage is
+scored on the mesh and the best one that keeps the rules is written. No
+region ends above 1.1x its input energy and no region gains a failing
+finding, or the input comes back unchanged. Band widths (repair margin,
+seam blend, smoothing, armpit/groin bands) are in limb radii, not edge
+rings, so the fix works the same at any mesh density. Details and
+evidence: [`docs/pick-and-bands.md`](docs/pick-and-bands.md).
 `--skintokens` adds the ML candidate: SkinTokens weights for the input's
 own skeleton (`skintokens skin`, sibling repo `~/SWE/blender/skintokens`,
 Rust, ~20 s on the M4; opt-in, so default runs stay byte-deterministic).
@@ -68,10 +77,13 @@ noise is judged on what a vertex does (a helper weight counts as half
 driver, half parent), so unweighted helpers leave `check` unchanged.
 
 `fix` weights them: `helper-band` widens each limb/body split around
-the joint (6 rings and 20 smoothing passes for arms; 4 and 30 for legs,
-hips chain only so one thigh never spreads into the other) and re-blends
-it onto the helper, and `helper-band+optimize` refines that with the
-LBS-to-DQS fit. Generic candidates leave helpers unweighted (re-blending
+the joint (a zone of 2.55 limb radii and smoothing 0.95 radii wide for
+arms; 1.6 and 1.1 for legs, hips chain only so one thigh never spreads
+into the other; on the 4.5k-vertex Andras mesh that is the old 6 rings /
+20 passes and 4 rings / 30 passes) and re-blends it onto the helper, and
+`helper-band+optimize` refines that with the LBS-to-DQS fit. Each is
+tried at 0.7x, 1x and 1.4x that width (`-narrow`, `-wide`): wider trades
+stretch for collapse, and the right width depends on the body. Generic candidates leave helpers unweighted (re-blending
 them too scored worse). Why: SkinTokens' armpit/groin transition is one
 or two edges wide, so a 90 deg swing tears those edges; widening it
 alone collapses the joint, and the half-turn helper holds the volume.
@@ -88,6 +100,16 @@ Arms up and right arm forward are clean. Still failing: right thigh
 stretch in `hip_forward.R` (9 verts, the crotch strip between the legs)
 and left upper arm volume in `arm_forward.L` (7 verts, front fold).
 Gate unchanged.
+
+Later the same day (exact region pick, bands in limb radii; gate
+unchanged): the genforge rehearsal of Andras (repair-topology with
+`--skeleton`, 4,459 welded verts) fixes 62.7 -> 76.0 and **passes**,
+where it stopped at 75.7 with one left-arm finding. The same character
+remeshed at 2.5k / 4.5k / 7k verts now fixes to 77.2 / 76.2 / 76.3 (mean
+of 3 SkinTokens seeds; was 73.3 / 75.4 / 77.8), passing in 5 of 9 runs
+(was 2). After animation, the game's `attack_3` overhead swing still
+fails the recheck. See [`docs/pick-and-bands.md`](docs/pick-and-bands.md);
+sheets in `~/Downloads/weightforge-fix/`.
 
 ## Blender
 

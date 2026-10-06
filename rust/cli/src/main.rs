@@ -32,7 +32,7 @@ FIX:
   --candidate   extra weights to score (any rigged GLB of this mesh); repeatable
   --skintokens  also score SkinTokens weights for this skeleton (the ML
                 candidate): runs `skintokens skin` ($SKINTOKENS_BIN, PATH, or
-                ~/SWE/blender/skintokens/bin/skintokens; ~1 min on an M4).
+                ~/SWE/blender/skintokens/bin/skintokens; ~20 s on an M4).
                 Never trusted blindly: scored like every other candidate
   --all-regions also change regions the check did not flag
   --sheet       write an A/B compare sheet (input vs fixed)

@@ -51,7 +51,7 @@ each failing region, blended at seams. No region ends worse than the input
 and no region gains a failing finding, or the input comes back unchanged.
 `--skintokens` adds the ML candidate: SkinTokens weights for the input's
 own skeleton (`skintokens skin`, sibling repo `~/SWE/blender/skintokens`,
-~1 min on the M4; opt-in, so default runs stay byte-deterministic).
+Rust, ~20 s on the M4; opt-in, so default runs stay byte-deterministic).
 It writes `fixed.glb` (in place: only JOINTS_0/WEIGHTS_0 bytes change,
 never positions or bones), `fixed.report.json` (before/after per region,
 method chosen, candidate scores), and with `--sheet` the A/B picture.

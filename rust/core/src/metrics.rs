@@ -141,8 +141,7 @@ impl Ctx {
     pub fn new(model: &Model, o: &CtxOpts) -> Ctx {
         let (class, poses) = default_poses(model, o.poses, o.clips);
         let mats: Vec<Vec<Mat4>> = poses.par_iter().map(|p| joint_matrices(model, p)).collect();
-        let all: Vec<usize> = (0..model.njoints()).collect();
-        let geo = geodesics(model, o.voxel_res, &all);
+        let geo = geodesics(model, o.voxel_res, &anchor_joints(model));
         let sk = &model.skel;
         let segs = mats
             .iter()
@@ -229,6 +228,44 @@ impl Ctx {
     }
 }
 
+/// Joints a vertex can belong to: all but the unweighted roots above the
+/// body (Unreal/MPFB `root`, an armature node), which sit at the floor or
+/// the origin. Counting those as a vertex's nearest bone puts the crotch in
+/// a "Root" region and reads its pelvis weights as bleed. A root is dropped
+/// only when it carries no weight and every weighted joint hangs below it;
+/// any weight on it then counts as bleed (it is far from everything).
+pub fn anchor_joints(model: &Model) -> Vec<usize> {
+    let n = model.njoints();
+    let mut weighted = vec![false; n];
+    for vw in &model.weights {
+        for &(j, x) in vw {
+            if x > 0.0 && (j as usize) < n {
+                weighted[j as usize] = true;
+            }
+        }
+    }
+    let ancestors = |j: usize| -> Vec<bool> {
+        let mut a = vec![false; n];
+        let mut p = model.skel.jparent[j];
+        while let Some(q) = p {
+            a[q] = true;
+            p = model.skel.jparent[q];
+        }
+        a
+    };
+    let mut common: Option<Vec<bool>> = None;
+    for j in (0..n).filter(|&j| weighted[j]) {
+        let a = ancestors(j);
+        common = Some(match common {
+            None => a,
+            Some(c) => c.iter().zip(&a).map(|(x, y)| *x && *y).collect(),
+        });
+    }
+    let common = common.unwrap_or_else(|| vec![false; n]);
+    let keep: Vec<usize> = (0..n).filter(|&j| weighted[j] || !common[j]).collect();
+    if keep.is_empty() { (0..n).collect() } else { keep }
+}
+
 /// Per-vertex results for one weight set.
 pub struct Eval {
     pub flags: Vec<u8>,
@@ -248,10 +285,11 @@ pub struct Eval {
     pub min_thin: Vec<f64>,
 }
 
-/// Speckle score: high only when a vertex disagrees with its neighbors both
-/// against their mean (so not a smooth gradient, where the mean matches)
-/// and against most of them individually (so not a clean hard step, where
-/// half the neighbors agree).
+/// Speckle score: high only when a vertex disagrees with its neighbors
+/// against their mean (so not a smooth gradient, where the mean matches),
+/// against most of them individually (so not a clean hard step, where half
+/// the neighbors agree), and off a linear fit of its neighbors (so not a
+/// steep gradient on a coarse, uneven mesh).
 pub fn noise_of(model: &Model, w: &Weights, v: usize) -> f64 {
     let n = &model.adj[v];
     if n.len() < 3 {
@@ -274,7 +312,99 @@ pub fn noise_of(model: &Model, w: &Weights, v: usize) -> f64 {
             }
         }
     }
-    median.min(l1(&w[v], &mean))
+    // A steep but smooth gradient (one edge spans most of a joint's falloff
+    // on a coarse mesh) is close to linear across the one-ring, even an
+    // uneven one, where the plain mean is off; a speckle is not. Residual
+    // of each bone's weight against a linear fit over the neighbors (ridge
+    // least squares in rest space), summed over bones (L1, same scale).
+    let linear = linear_residual(model, w, v);
+    median.min(l1(&w[v], &mean)).min(linear)
+}
+
+/// L1 distance from a vertex's weights to the value a linear fit of its
+/// neighbors' weights predicts at the vertex.
+fn linear_residual(model: &Model, w: &Weights, v: usize) -> f64 {
+    let n = &model.adj[v];
+    let p0 = model.rest[v];
+    let d: Vec<[f64; 3]> = n
+        .iter()
+        .map(|&u| {
+            let q = model.rest[u as usize] - p0;
+            [q.x, q.y, q.z]
+        })
+        .collect();
+    let s2 = d.iter().map(|q| q[0] * q[0] + q[1] * q[1] + q[2] * q[2]).sum::<f64>() / d.len() as f64;
+    if s2 <= 0.0 {
+        return f64::MAX;
+    }
+    // Normal equations for [c0, g] with ridge on g (the direction along the
+    // surface normal is unconstrained by a near-planar ring).
+    let mut a = [[0.0f64; 4]; 4];
+    for q in &d {
+        let x = [1.0, q[0], q[1], q[2]];
+        for r in 0..4 {
+            for c in 0..4 {
+                a[r][c] += x[r] * x[c];
+            }
+        }
+    }
+    for (k, row) in a.iter_mut().enumerate().skip(1) {
+        row[k] += 1e-2 * s2;
+    }
+    let Some(inv) = invert4(a) else { return f64::MAX };
+    let mut bones: Vec<u32> = w[v].iter().map(|e| e.0).collect();
+    for &u in n {
+        for &(j, _) in &w[u as usize] {
+            if !bones.contains(&j) {
+                bones.push(j);
+            }
+        }
+    }
+    let mut res = 0.0;
+    for j in bones {
+        let mut b = [0.0f64; 4];
+        for (k, &u) in n.iter().enumerate() {
+            let y = weight_of(&w[u as usize], j);
+            b[0] += y;
+            b[1] += y * d[k][0];
+            b[2] += y * d[k][1];
+            b[3] += y * d[k][2];
+        }
+        let c0: f64 = (0..4).map(|c| inv[0][c] * b[c]).sum();
+        res += (weight_of(&w[v], j) - c0.clamp(0.0, 1.0)).abs();
+    }
+    res
+}
+
+fn invert4(m: [[f64; 4]; 4]) -> Option<[[f64; 4]; 4]> {
+    let mut a = m;
+    let mut inv = [[0.0f64; 4]; 4];
+    for (i, row) in inv.iter_mut().enumerate() {
+        row[i] = 1.0;
+    }
+    for col in 0..4 {
+        let piv = (col..4).max_by(|&x, &y| a[x][col].abs().partial_cmp(&a[y][col].abs()).unwrap())?;
+        if a[piv][col].abs() < 1e-18 {
+            return None;
+        }
+        a.swap(col, piv);
+        inv.swap(col, piv);
+        let k = a[col][col];
+        for c in 0..4 {
+            a[col][c] /= k;
+            inv[col][c] /= k;
+        }
+        for r in 0..4 {
+            if r != col {
+                let f = a[r][col];
+                for c in 0..4 {
+                    a[r][c] -= f * a[col][c];
+                    inv[r][c] -= f * inv[col][c];
+                }
+            }
+        }
+    }
+    Some(inv)
 }
 
 /// Static (pose-free) bleed: weight on a bone far from the vertex through

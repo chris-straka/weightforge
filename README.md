@@ -10,7 +10,7 @@ elbows, a hand that follows the thigh, a cape on the wrong bone, speckled
 weights), repairs it, and proves the repair with numbers and pictures.
 
 Status: P0–P3 and P5's Blender extension built and gated on fixtures; P4
-(owner-rated Tripo set) and the genforge hook are open. Gate numbers:
+(owner-rated Tripo set) is open; the genforge hook is built, its live run pending. Gate numbers:
 [`docs/phase-0.md`](docs/phase-0.md) … [`docs/phase-5.md`](docs/phase-5.md).
 Spec: [PLAN.md](PLAN.md).
 

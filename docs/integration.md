@@ -1,7 +1,7 @@
 # Integrating weightforge
 
 Where it sits in the HLL character chain: after rigging (Tripo auto-rig,
-SkinTokens, rigforge, wrapforge) and rfcheck, before animation and Godot
+SkinTokens, rigforge, wrapforge) and rfcheck, before animation and the game (Bevy)
 export. It only ever rewrites `JOINTS_0`/`WEIGHTS_0`; topology, shape, bone
 names and hierarchy belong to retopoforge, wrapforge, rigforge.
 

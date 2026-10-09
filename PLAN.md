@@ -1,8 +1,8 @@
 # weightforge — build plan
 
 Automatic skin-weight QA and repair for game-bound characters. Written
-2026-10-04 for the HLL asset pipeline (`~/SWE/games/_tools/asset-pipeline.md`)
-and genforge's `gen character` chain (`~/SWE/genforge/PLAN.md` P7).
+2026-10-04 for the HLL asset pipeline (`~/Games/_tools/asset-pipeline.md`)
+and genforge's `gen character` chain (`~/Games/_media/genforge/PLAN.md` P7).
 
 ## Why
 
@@ -68,7 +68,7 @@ report, and a pose sheet with bad vertices painted red.
    unity, sparse).
 5. **ML candidate:** SkinTokens weights for the rig's own skeleton
    (`weights fix --skintokens` runs `skintokens skin` from
-   `~/SWE/blender/skintokens`) as one more candidate, never trusted
+   `~/Games/_blender/skintokens`) as one more candidate, never trusted
    blindly; it gets scored like the rest. SkinTokens replaced UniRig
    (`unirig-mac`, retired) on 2026-10-05: on the genforge rehearsal Andras
    its own rig scores 47.9 raw / 61.6 fixed against UniRig's 10.1 / 33.6

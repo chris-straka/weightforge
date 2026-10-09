@@ -59,7 +59,7 @@ seam blend, smoothing, armpit/groin bands) are in limb radii, not edge
 rings, so the fix works the same at any mesh density. Details and
 evidence: [`docs/pick-and-bands.md`](docs/pick-and-bands.md).
 `--skintokens` adds the ML candidate: SkinTokens weights for the input's
-own skeleton (`skintokens skin`, sibling repo `~/SWE/blender/skintokens`,
+own skeleton (`skintokens skin`, sibling repo `~/Games/_blender/skintokens`,
 Rust, ~20 s on the M4; opt-in, so default runs stay byte-deterministic).
 It writes `fixed.glb` (in place: only JOINTS_0/WEIGHTS_0 bytes change,
 never positions or bones), `fixed.report.json` (before/after per region,

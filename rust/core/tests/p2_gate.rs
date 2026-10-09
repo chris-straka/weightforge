@@ -104,7 +104,7 @@ fn output_is_rig_contract_clean_and_only_weights_change() {
 
 fn rfcheck() -> Option<std::path::PathBuf> {
     let home = std::env::var_os("HOME")?;
-    let p = std::path::PathBuf::from(home).join("SWE/rfcheck/target/release/rfcheck");
+    let p = std::path::PathBuf::from(home).join("Games/_blender/rfcheck/target/release/rfcheck");
     p.exists()
         .then_some(p)
         .or_else(|| std::process::Command::new("rfcheck").arg("--help").output().ok().map(|_| std::path::PathBuf::from("rfcheck")))

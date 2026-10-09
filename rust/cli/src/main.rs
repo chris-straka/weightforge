@@ -36,7 +36,7 @@ FIX:
   --candidate   extra weights to score (any rigged GLB of this mesh); repeatable
   --skintokens  also score SkinTokens weights for this skeleton (the ML
                 candidate): runs `skintokens skin` ($SKINTOKENS_BIN, PATH, or
-                ~/SWE/blender/skintokens/bin/skintokens; ~20 s on an M4).
+                ~/Games/_blender/skintokens/bin/skintokens; ~20 s on an M4).
                 Never trusted blindly: scored like every other candidate
   --all-regions also change regions the check did not flag
   --sheet       write an A/B compare sheet (input vs fixed)
@@ -240,7 +240,7 @@ fn cmd_compare(a: &Args) -> ExitCode {
 }
 
 /// The ML candidate: SkinTokens weights for the input's own skeleton
-/// (`skintokens skin`, sibling repo ~/SWE/blender/skintokens). Err = the tool
+/// (`skintokens skin`, sibling repo ~/Games/_blender/skintokens). Err = the tool
 /// is missing (usage error); Ok(None) = it ran and failed, so the fix goes on
 /// without it (a warning, never a worse result).
 fn skintokens_candidate(input: &str) -> Result<Option<wf::scene::Model>, String> {
@@ -248,9 +248,9 @@ fn skintokens_candidate(input: &str) -> Result<Option<wf::scene::Model>, String>
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("PATH").and_then(|p| std::env::split_paths(&p).map(|d| d.join("skintokens")).find(|f| f.is_file())))
         .or_else(|| {
-            std::env::var_os("HOME").map(|h| PathBuf::from(h).join("SWE/blender/skintokens/bin/skintokens")).filter(|f| f.is_file())
+            std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Games/_blender/skintokens/bin/skintokens")).filter(|f| f.is_file())
         })
-        .ok_or("skintokens not found (set SKINTOKENS_BIN or see ~/SWE/blender/skintokens)")?;
+        .ok_or("skintokens not found (set SKINTOKENS_BIN or see ~/Games/_blender/skintokens)")?;
     if !bin.is_file() {
         return Err(format!("{} not found", bin.display()));
     }

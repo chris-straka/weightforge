@@ -73,7 +73,7 @@ Noise made a skin worse, it lost the early sets, and the fix went up
 
 The case from the SkinTokens port (`skintokens/docs/evaluation.md`,
 "Rust port"). The input is the standardized 17.0-score game rig of the
-Andras rehearsal mesh, and one `skintokens skin` output is the
+the hero rehearsal mesh, and one `skintokens skin` output is the
 `--candidate`. Candidates are 8 Python and 8 Rust seeds; Rust seed 4 is
 also degraded with multiplicative weight noise (amplitude 0.25 to 2.0,
 plus the noisy copy the evaluation used). Candidate quality is the skin's
@@ -146,7 +146,7 @@ Dijkstra per candidate in use, at any density. Diffusion would need
 Calibration: each width equals the old ring count on the mesh it was
 tuned on. The fix bands match the test mannequin from P2 (mean edge 0.47
 feature sizes, cape edge 0.8). The helper bands match the 4.5k-vertex
-Andras game mesh (the README tuning; its armpit and groin edges are
+the hero game mesh (the README tuning; its armpit and groin edges are
 0.031-0.043 m against 0.075-0.10 m limb radii). The helper band is also
 tried at 0.7x and 1.4x (`helper-band-narrow`, `-wide`), because the right
 width depends on the body: wider trades stretch for collapse.
@@ -182,7 +182,7 @@ pass the gate:
 
 | | low | mid | high |
 |---|---|---|---|
-| Andras, verts | 2,503 | 4,459 | 6,971 |
+| hero, verts | 2,503 | 4,459 | 6,971 |
 | old | 73.3 (66.5-77.7), 2/3 | 75.4 (75.2-75.7), 0/3 | 77.8 (77.2-78.6), 0/3 |
 | new | 77.2 (73.2-79.3), 3/3 | 76.2 (76.0-76.4), 2/3 | 76.3 (73.2-78.2), 0/3 |
 | mannequin, verts | 2,662 | 4,455 | 6,683 |
@@ -194,7 +194,7 @@ pass the gate:
 
 What this shows:
 
-- **Andras:** the spread of the means across densities went from 4.5
+- **Hero:** the spread of the means across densities went from 4.5
   points to 1.0, well inside seed noise (up to 6 points within one
   density). Runs passing the gate: 2/9 → 5/9. High density still keeps
   one left upper arm stretch (7 verts, arm_up) in every seed.
@@ -204,11 +204,11 @@ What this shows:
   The fix is level or better at every density.
 
 Sheets: `~/Downloads/weightforge-fix/2-density-scores-old-vs-new.png`, and
-`4-andras-low-density-old-vs-new.png` (seed 0, 2.5k verts: old 66.5 fails
+`4-hero-low-density-old-vs-new.png` (seed 0, 2.5k verts: old 66.5 fails
 ARM_UP.L, new 73.2 passes).
 
 **Bench (P4 set, 7 UniRig rigs with generic bone names, harsh generic
-ROM; old → new):** andras 50.9 → 51.1, bird 42.5 → 35.4, cree 64.6 →
+ROM; old → new):** hero 50.9 → 51.1, bird 42.5 → 35.4, cree 64.6 →
 65.0, giraffe 32.5 → 30.9, stalker 77.6 → 66.5 (failing 3 → 1), tira 39.8
 → 60.3, carrot 27.3 → 40.0. None worse than its input, none passes.
 Three improved and three dropped. These rigs have 14 to 88 failing
@@ -216,10 +216,10 @@ findings, so the pick is not exact. On stalker, gate-first traded 11
 points for two fewer failing findings. These rigs are re-rig cases
 (rigforge, wrapforge), not weight cases.
 
-## Andras through the genforge chain
+## The hero through the genforge chain
 
 genforge `--mode rehearsal` (free mock providers, the real local
-adapters), Andras fixture model, SkinTokens rig, same as D62; only the
+adapters), the hero fixture model, SkinTokens rig, same as D62; only the
 weightforge binary changed.
 
 | step | before | after |
@@ -227,7 +227,7 @@ weightforge binary changed.
 | D62 (old weightforge) | 62.7, 4 failing | 75.7, 1 failing: left upper arm stretch, arm_up, 4 verts → stops at the gate |
 | now | 62.7, 4 failing | **76.0, passes** |
 
-Sheet: `~/Downloads/weightforge-fix/1-andras-gate-before-vs-after.png`
+Sheet: `~/Downloads/weightforge-fix/1-hero-gate-before-vs-after.png`
 (every ROM pose clean, ARM_UP.L 8 → 0).
 
 The chain then goes past the gate for the first time: pose-test (gate),
@@ -244,7 +244,7 @@ corrective blend shapes for arm_up/arm_forward baked into the clips
 
 ## Cost
 
-`weights fix` time on the M4, old → new: Andras and the mannequin
+`weights fix` time on the M4, old → new: the hero and the mannequin
 0.3 → 1-2 s; the 17.0 game rig 0.9 → about 30 s (16 failing regions:
 each pick runs to its node budget, and refinement re-measures about 600
 moves per round); bench tira (54k verts) 16 → 106 s and carrot (145k)

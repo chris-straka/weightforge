@@ -67,11 +67,11 @@ method chosen, candidate scores), and with `--sheet` the A/B picture.
 
 ## Twist/helper bones
 
-The HLL humanoid has helper bones at the upper arms and thighs
+The standard humanoid skeleton has helper bones at the upper arms and thighs
 (`DEF-upper_arm_twist.L` ..., added by motionforge's standardize). Each
 sits on its driver's joint and turns by a share (0.5) of the driver's
 rotation; clips bake that, and weightforge poses them the same way
-(`core/src/helpers.rs`: node `extras.hll_helper`, else the `_twist`
+(`core/src/helpers.rs`: node `extras.helper_bone`, else the `_twist`
 name). Helpers are not pose roles and not regions of their own, and
 noise is judged on what a vertex does (a helper weight counts as half
 driver, half parent), so unweighted helpers leave `check` unchanged.
@@ -79,7 +79,7 @@ driver, half parent), so unweighted helpers leave `check` unchanged.
 `fix` weights them: `helper-band` widens each limb/body split around
 the joint (a zone of 2.55 limb radii and smoothing 0.95 radii wide for
 arms; 1.6 and 1.1 for legs, hips chain only so one thigh never spreads
-into the other; on the 4.5k-vertex Andras mesh that is the old 6 rings /
+into the other; on the 4.5k-vertex hero mesh that is the old 6 rings /
 20 passes and 4 rings / 30 passes) and re-blends it onto the helper, and
 `helper-band+optimize` refines that with the LBS-to-DQS fit. Each is
 tried at 0.7x, 1x and 1.4x that width (`-narrow`, `-wide`): wider trades
@@ -88,7 +88,7 @@ them too scored worse). Why: SkinTokens' armpit/groin transition is one
 or two edges wide, so a 90 deg swing tears those edges; widening it
 alone collapses the joint, and the half-turn helper holds the volume.
 
-Andras game mesh, fresh SkinTokens rig (seed 0), standardized
+A stylized hero game mesh, fresh SkinTokens rig (seed 0), standardized
 (2026-10-05; sheets in `~/Downloads/twist-bones/`):
 
 | | raw | after `weights fix` |
@@ -102,7 +102,7 @@ and left upper arm volume in `arm_forward.L` (7 verts, front fold).
 Gate unchanged.
 
 Later the same day (exact region pick, bands in limb radii; gate
-unchanged): the genforge rehearsal of Andras (repair-topology with
+unchanged): the genforge rehearsal of the hero (repair-topology with
 `--skeleton`, 4,459 welded verts) fixes 62.7 -> 76.0 and **passes**,
 where it stopped at 75.7 with one left-arm finding. The same character
 remeshed at 2.5k / 4.5k / 7k verts now fixes to 77.2 / 76.2 / 76.3 (mean

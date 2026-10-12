@@ -1,4 +1,4 @@
-//! Twist/helper bones (the HLL humanoid's `DEF-upper_arm_twist.L`,
+//! Twist/helper bones (the standard humanoid skeleton's `DEF-upper_arm_twist.L`,
 //! `DEF-thigh_twist.R`, ...).
 //!
 //! A helper sits on its driver's joint, under the driver's parent, and
@@ -7,7 +7,7 @@
 //! clip). weightforge has to pose them the same way, or its ROM would
 //! leave the helpers at rest and measure a rig the game never shows.
 //!
-//! Detection: node `extras.hll_helper = {"driver", "share"}`, else the
+//! Detection: node `extras.helper_bone = {"driver", "share"}`, else the
 //! name convention `<driver base>_twist.<side>` with share 0.5. A helper
 //! must hang from its driver's parent; anything else is a plain bone.
 //!
@@ -35,7 +35,7 @@ pub struct Helper {
 pub fn detect(raw_nodes: &[Value], nodes: &[Node], joints: &[usize], names: &[String]) -> Vec<Helper> {
     let mut out = Vec::new();
     for (j, &n) in joints.iter().enumerate() {
-        let extras = raw_nodes.get(n).and_then(|x| x.get("extras")).and_then(|e| e.get("hll_helper"));
+        let extras = raw_nodes.get(n).and_then(|x| x.get("extras")).and_then(|e| e.get("helper_bone"));
         let (driver_name, share) = match extras {
             Some(h) => (
                 h.get("driver").and_then(Value::as_str).map(str::to_string),
@@ -138,7 +138,7 @@ fn outside(sk: &Skeleton) -> Vec<Vec<bool>> {
 
 /// Band widths `(zone, smoothing)` in limb radii of the driver (the median
 /// distance of its region's vertices to its bone), so a band keeps its
-/// width at any mesh density. Measured on the SkinTokens Andras game mesh
+/// width at any mesh density. Measured on the SkinTokens hero game mesh
 /// (README "Twist/helper bones"), where they were 6 rings / 20 passes
 /// (arms) and 4 rings / 30 passes (legs): wider arm bands trade stretch
 /// for collapse, wider leg bands drag the shirt hem.
@@ -350,7 +350,7 @@ mod tests {
     use crate::fixtures::{Bone, build, to_glb};
     use crate::metrics::{Ctx, CtxOpts, evaluate};
 
-    /// The clean mannequin plus the HLL arm and thigh helpers.
+    /// The clean mannequin plus the standard arm and thigh helpers.
     fn with_helpers() -> Model {
         let mut f = build("clean");
         for side in ["L", "R"] {

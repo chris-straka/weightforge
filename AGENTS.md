@@ -8,7 +8,7 @@ measured gate numbers: `docs/phase-N.md`.
 ## Standing rules
 
 - Commit and push after each completed chunk; never force-push or
-  rewrite history. No remote exists yet: ask before creating one.
+  rewrite history. The remote is `chris-straka/weightforge`.
 - Never commit the owner's game assets, nor their names or paths in
   tracked files ("the owner's corpus"). `bench/models/` and
   `bench/results/` are gitignored.

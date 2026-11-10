@@ -1,5 +1,7 @@
 # weightforge — agent notes
 
+One rules file only: this `AGENTS.md` is it — never create a `CLAUDE.md` in this folder (Muse ignores it and warns while both exist).
+
 Skin-weight QA and repair for rigged game GLBs. Rust core
 (`rust/core`, MIT) + `weights` CLI (`rust/cli`) + Blender extension
 (`blender/weightforge`, GPL, subprocess only). Spec and gates: PLAN.md;

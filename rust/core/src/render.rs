@@ -125,6 +125,26 @@ pub fn draw_mesh(
     view: &View,
     f: Fit,
 ) {
+    draw_mesh_glow(img, x0, y0, w, h, pos, tris, colors, view, f, None)
+}
+
+/// `draw_mesh` with a per-vertex glow (0 to 1): how far a vertex's colour
+/// is lifted out of the shading, so a marked vertex stays bright on a
+/// surface turned away from the light.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_mesh_glow(
+    img: &mut Image,
+    x0: usize,
+    y0: usize,
+    w: usize,
+    h: usize,
+    pos: &[Vec3],
+    tris: &[[u32; 3]],
+    colors: &[[f64; 3]],
+    view: &View,
+    f: Fit,
+    glow: Option<&[f64]>,
+) {
     const SS: usize = 2;
     let (sw, sh) = (w * SS, h * SS);
     let mut color = vec![[0.0f64; 3]; sw * sh];
@@ -151,6 +171,7 @@ pub fn draw_mesh(
             continue;
         }
         let (ca, cb, cc) = (colors[t[0] as usize], colors[t[1] as usize], colors[t[2] as usize]);
+        let g = glow.map(|g| (g[t[0] as usize], g[t[1] as usize], g[t[2] as usize]));
         for py in miny..=maxy as usize {
             for px in minx..=maxx as usize {
                 let (x, y) = (px as f64 + 0.5, py as f64 + 0.5);
@@ -166,6 +187,10 @@ pub fn draw_mesh(
                     continue;
                 }
                 depth[i] = z;
+                let shade = match g {
+                    Some((ga, gb, gc)) => shade + (1.0 - shade) * (ga * w0 + gb * w1 + gc * w2),
+                    None => shade,
+                };
                 for k in 0..3 {
                     color[i][k] = (ca[k] * w0 + cb[k] * w1 + cc[k] * w2) * shade;
                 }
@@ -415,4 +440,407 @@ pub fn compare(a: &Side, b: &Side, o: &SheetOpts) -> Image {
         }
     }
     img
+}
+
+// ---- Zoomed compare: one pose a row, the worst first, cropped to the fault ----
+
+/// One row of the zoomed compare: a pose by name, and for each rig its
+/// pose index and failing-vertex count (None: that rig has no such pose).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ZoomRow {
+    pub name: String,
+    pub a: Option<(usize, usize)>,
+    pub b: Option<(usize, usize)>,
+}
+
+impl ZoomRow {
+    fn counts(&self) -> (usize, usize) {
+        (self.a.map_or(0, |x| x.1), self.b.map_or(0, |x| x.1))
+    }
+}
+
+/// Poses matched by name and ranked by the larger of the two rigs' fault
+/// counts (then by their sum, then range-of-motion order). A pose only one
+/// rig has is kept; a pose neither rig fails is left out.
+pub fn rank_rows(names_a: &[&str], bad_a: &[usize], names_b: &[&str], bad_b: &[usize], max: usize) -> Vec<ZoomRow> {
+    let mut rows: Vec<ZoomRow> = names_a
+        .iter()
+        .enumerate()
+        .map(|(i, n)| ZoomRow {
+            name: n.to_string(),
+            a: Some((i, bad_a[i])),
+            b: names_b.iter().position(|m| m == n).map(|j| (j, bad_b[j])),
+        })
+        .collect();
+    for (j, n) in names_b.iter().enumerate() {
+        if !names_a.contains(n) {
+            rows.push(ZoomRow { name: n.to_string(), a: None, b: Some((j, bad_b[j])) });
+        }
+    }
+    rows.retain(|r| r.counts() != (0, 0));
+    rows.sort_by(|x, y| {
+        let ((xa, xb), (ya, yb)) = (x.counts(), y.counts());
+        ya.max(yb).cmp(&xa.max(xb)).then((ya + yb).cmp(&(xa + xb)))
+    });
+    rows.truncate(max);
+    rows
+}
+
+pub struct ZoomOpts<'a> {
+    /// Poses shown (the worst first).
+    pub rows: usize,
+    pub cell_w: usize,
+    pub cell_h: usize,
+    pub label_a: &'a str,
+    pub label_b: &'a str,
+}
+
+impl Default for ZoomOpts<'_> {
+    fn default() -> Self {
+        ZoomOpts { rows: 5, cell_w: 520, cell_h: 420, label_a: "A", label_b: "B" }
+    }
+}
+
+const ZHEADER: usize = 164;
+const ZROW: usize = 62;
+const GREY: [f64; 3] = [0.72, 0.72, 0.74];
+const HOT: [f64; 3] = [1.0, 0.10, 0.06];
+const BOX: [u8; 3] = [255, 214, 64];
+/// The smallest crop, in body heights: a fault is shown with its joint
+/// around it, never as a few triangles filling the cell.
+const ZOOM_MIN: f64 = 0.30;
+
+/// Cameras tried for each row; the one that shows the most of both rigs'
+/// failing vertices is used for both.
+const ZOOM_VIEWS: &[(f64, f64, &str)] = &[
+    (30.0, 8.0, "FRONT LEFT"),
+    (-30.0, 8.0, "FRONT RIGHT"),
+    (150.0, 8.0, "BACK LEFT"),
+    (-150.0, 8.0, "BACK RIGHT"),
+    (30.0, -40.0, "FRONT LEFT, FROM BELOW"),
+    (-30.0, -40.0, "FRONT RIGHT, FROM BELOW"),
+    (150.0, -40.0, "BACK LEFT, FROM BELOW"),
+    (-150.0, -40.0, "BACK RIGHT, FROM BELOW"),
+    (30.0, 40.0, "FRONT LEFT, FROM ABOVE"),
+    (-30.0, 40.0, "FRONT RIGHT, FROM ABOVE"),
+    (150.0, 40.0, "BACK LEFT, FROM ABOVE"),
+    (-150.0, 40.0, "BACK RIGHT, FROM ABOVE"),
+];
+
+/// Vertices to paint in a pose: the failing ones, and all of a piece that
+/// tears off.
+fn failing(model: &Model, bad: &[(u32, u8)], mask: &[u8]) -> Vec<bool> {
+    let mut torn = vec![false; model.parts.len()];
+    let mut out = vec![false; model.nverts()];
+    for &(v, f) in bad {
+        let f = f & mask[v as usize];
+        if f & F_FOLLOW != 0 {
+            torn[model.vpart[v as usize] as usize] = true;
+        }
+        if f & !F_INTERSECT != 0 {
+            out[v as usize] = true;
+        }
+    }
+    for (v, o) in out.iter_mut().enumerate() {
+        *o |= torn[model.vpart[v] as usize];
+    }
+    out
+}
+
+/// A rig's rest body in a camera: centre line, feet and height. Crops are
+/// placed in these units so two rigs of different size frame the same
+/// part of the body.
+#[derive(Clone, Copy)]
+struct Frame {
+    cx: f64,
+    y0: f64,
+    h: f64,
+}
+
+fn frame(view: &View, rest: &[Vec3]) -> Frame {
+    let (mut lo, mut hi) = (v3(f64::MAX, f64::MAX, 0.0), v3(f64::MIN, f64::MIN, 0.0));
+    for p in rest {
+        let q = view.to_cam(*p);
+        lo = lo.min(q);
+        hi = hi.max(q);
+    }
+    Frame { cx: (lo.x + hi.x) * 0.5, y0: lo.y, h: (hi.y - lo.y).max(1e-9) }
+}
+
+/// The 4th and 96th percentile of `v` (its whole range when short), so
+/// one stray vertex does not widen the crop.
+fn span(v: &mut [f64]) -> (f64, f64) {
+    v.sort_by(|a, b| a.total_cmp(b));
+    let cut = if v.len() >= 25 { v.len() / 25 } else { 0 };
+    (v[cut], v[v.len() - 1 - cut])
+}
+
+/// One crop for both rigs: the box around their failing vertices in this
+/// pose, in body units, padded and held to the cell's shape. None when
+/// neither has one.
+fn zoom_fits(view: &View, rest: [&[Vec3]; 2], mesh: [&[Vec3]; 2], flags: [&[bool]; 2], cw: usize, ch: usize) -> Option<[Fit; 2]> {
+    let frames = [frame(view, rest[0]), frame(view, rest[1])];
+    let (mut us, mut vs) = (Vec::new(), Vec::new());
+    for k in 0..2 {
+        for (p, _) in mesh[k].iter().zip(flags[k]).filter(|(_, f)| **f) {
+            let q = view.to_cam(*p);
+            us.push((q.x - frames[k].cx) / frames[k].h);
+            vs.push((q.y - frames[k].y0) / frames[k].h);
+        }
+    }
+    if us.is_empty() {
+        return None;
+    }
+    let ((u0, u1), (v0, v1)) = (span(&mut us), span(&mut vs));
+    let aspect = cw as f64 / ch as f64;
+    let (bw, bh) = ((u1 - u0) * 1.4 + 0.06, (v1 - v0) * 1.4 + 0.06);
+    let hh = bh.max(bw / aspect).max(ZOOM_MIN);
+    let (uc, vc) = ((u0 + u1) * 0.5, (v0 + v1) * 0.5);
+    Some(frames.map(|fr| Fit { cx: fr.cx + uc * fr.h, cy: fr.y0 + vc * fr.h, ppu: ch as f64 / (hh * fr.h) }))
+}
+
+/// How many marked vertices a camera sees inside a w x h cell: in frame
+/// and not behind the body.
+fn visible(pos: &[Vec3], tris: &[[u32; 3]], marked: &[bool], view: &View, f: Fit, w: usize, h: usize) -> usize {
+    let scr: Vec<(f64, f64, f64)> = pos
+        .iter()
+        .map(|p| {
+            let q = view.to_cam(*p);
+            ((q.x - f.cx) * f.ppu + w as f64 * 0.5, (f.cy - q.y) * f.ppu + h as f64 * 0.5, q.z)
+        })
+        .collect();
+    let mut depth = vec![f64::NEG_INFINITY; w * h];
+    for t in tris {
+        let (a, b, c) = (scr[t[0] as usize], scr[t[1] as usize], scr[t[2] as usize]);
+        let area = (b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0);
+        if area.abs() < 1e-12 {
+            continue;
+        }
+        let minx = a.0.min(b.0).min(c.0).floor().max(0.0) as usize;
+        let maxx = (a.0.max(b.0).max(c.0).ceil() as isize).min(w as isize - 1);
+        let miny = a.1.min(b.1).min(c.1).floor().max(0.0) as usize;
+        let maxy = (a.1.max(b.1).max(c.1).ceil() as isize).min(h as isize - 1);
+        if maxx < 0 || maxy < 0 {
+            continue;
+        }
+        for py in miny..=maxy as usize {
+            for px in minx..=maxx as usize {
+                let (x, y) = (px as f64 + 0.5, py as f64 + 0.5);
+                let w0 = ((b.0 - x) * (c.1 - y) - (b.1 - y) * (c.0 - x)) / area;
+                let w1 = ((c.0 - x) * (a.1 - y) - (c.1 - y) * (a.0 - x)) / area;
+                let w2 = 1.0 - w0 - w1;
+                if w0 < 0.0 || w1 < 0.0 || w2 < 0.0 {
+                    continue;
+                }
+                let z = w0 * a.2 + w1 * b.2 + w2 * c.2;
+                let d = &mut depth[py * w + px];
+                if z > *d {
+                    *d = z;
+                }
+            }
+        }
+    }
+    // A vertex counts as seen when nothing is more than 2% of the crop's
+    // height in front of it.
+    let eps = 0.02 * h as f64 / f.ppu;
+    let mut n = 0;
+    for (s, m) in scr.iter().zip(marked) {
+        if !*m || s.0 < 0.0 || s.1 < 0.0 || s.0 >= w as f64 || s.1 >= h as f64 {
+            continue;
+        }
+        if s.2 >= depth[s.1 as usize * w + s.0 as usize] - eps {
+            n += 1;
+        }
+    }
+    n
+}
+
+/// The line that says which rig is better and by how much, and the
+/// numbers behind it. Weightforge ranks rigs by the gate first, then the
+/// score (as `fix` ranks its candidates); the higher score with more
+/// failing findings is called mixed.
+pub fn zoom_headline(a: &SheetInfo, b: &SheetInfo, label_a: &str, label_b: &str, bad_a: usize, bad_b: usize) -> (String, String) {
+    let b_wins = if a.pass != b.pass { b.pass } else { b.score > a.score };
+    let ((w, wl, wb), (l, ll, lb)) =
+        if b_wins { ((b, label_b, bad_b), (a, label_a, bad_a)) } else { ((a, label_a, bad_a), (b, label_b, bad_b)) };
+    let head = if w.pass != l.pass {
+        format!("{wl} PASSES THE GATE, {ll} DOES NOT")
+    } else if (w.score - l.score).abs() < 1.0 {
+        format!("ABOUT EVEN: {wl} {:.1}, {ll} {:.1} OUT OF 100", w.score, l.score)
+    } else if w.fails > l.fails {
+        // The higher score with more failing findings is not a clear win.
+        format!("MIXED: {wl} SCORES {:.1} VS {:.1} BUT FAILS MORE", w.score, l.score)
+    } else {
+        format!("{wl} IS BETTER: {:.1} VS {:.1} OUT OF 100", w.score, l.score)
+    };
+    let detail = format!("{wl} VS {ll}: FAILING FINDINGS {} VS {}, BAD VERTS OVER ALL POSES {} VS {}", w.fails, l.fails, wb, lb);
+    (head, detail)
+}
+
+fn outline(img: &mut Image, x0: usize, y0: usize, x1: usize, y1: usize, c: [u8; 3]) {
+    let (w, h) = (x1.saturating_sub(x0).max(2), y1.saturating_sub(y0).max(2));
+    img.rect(x0, y0, w, 2, c);
+    img.rect(x0, y0 + h - 2, w, 2, c);
+    img.rect(x0, y0, 2, h, c);
+    img.rect(x0 + w - 2, y0, 2, h, c);
+}
+
+/// A/B sheet for judging two rigs at a glance: a headline saying which is
+/// better, then one pose a row, the pose with the most failing vertices on
+/// either rig first. Both rigs are drawn from the same camera, cropped to
+/// the same part of the body (where they fail), failing vertices bright
+/// red on grey; a small whole figure in each cell's corner boxes the crop.
+pub fn compare_zoom(a: &Side, b: &Side, o: &ZoomOpts) -> Image {
+    let sides = [a, b];
+    let labels = [o.label_a, o.label_b];
+    let bad = [masked_pose_bad(a.ev, a.info.mask), masked_pose_bad(b.ev, b.info.mask)];
+    let names: [Vec<&str>; 2] = [a, b].map(|s| s.ctx.poses.iter().map(|p| p.name.as_str()).collect());
+    let rows = rank_rows(&names[0], &bad[0], &names[1], &bad[1], o.rows);
+    let rest = [posed(a.model, a.ctx, None, a.w), posed(b.model, b.ctx, None, b.w)];
+    let w = 2 * o.cell_w;
+    let mut img = Image::new(w, ZHEADER + rows.len().max(1) * (ZROW + o.cell_h), BG);
+
+    let (head, detail) = zoom_headline(&a.info, &b.info, labels[0], labels[1], bad[0].iter().sum(), bad[1].iter().sum());
+    let scale = if text_width(&head, 4) + 24 <= w { 4 } else { 3 };
+    img.text(12, 12, &fit_text(&head, (w - 24) / (6 * scale)), scale, FG);
+    img.text(12, 52, &fit_text(&detail, (w - 24) / 12), 2, FG);
+    img.text(12, 78, "ONE POSE A ROW, WORST FIRST. SAME CAMERA AND CROP ON BOTH. RED = FAILS IN THAT POSE.", 2, DIM);
+    for (k, side) in sides.iter().enumerate() {
+        let x = 12 + k * o.cell_w;
+        img.text(x, 106, &fit_text(labels[k], (o.cell_w - 24) / 18), 3, FG);
+        let (line, col) = if side.info.pass {
+            (format!("{:.1}/100 PASS", side.info.score), GREEN)
+        } else {
+            (format!("{:.1}/100 FAIL, {} FAILING FINDINGS", side.info.score, side.info.fails), RED)
+        };
+        let lx = x + text_width(labels[k], 3).min(o.cell_w / 2) + 18;
+        img.text(lx, 110, &line, 2, col);
+        img.text(x, 138, &fit_text(side.info.title, (o.cell_w - 24) / 12), 2, DIM);
+    }
+    if rows.is_empty() {
+        img.text(12, ZHEADER + 12, "NO POSE FAILS ON EITHER RIG", 3, GREEN);
+    }
+
+    let (iw, ih) = (o.cell_w / 5, o.cell_h / 3);
+    for (r, row) in rows.iter().enumerate() {
+        let y = ZHEADER + r * (ZROW + o.cell_h);
+        let picks = [row.a, row.b];
+        let mesh = [0, 1].map(|k| posed(sides[k].model, sides[k].ctx, picks[k].map(|p| p.0), sides[k].w));
+        let flags = [0, 1].map(|k| match picks[k] {
+            Some((p, _)) => failing(sides[k].model, &sides[k].ev.bad_in_pose[p], sides[k].info.mask),
+            None => vec![false; sides[k].model.nverts()],
+        });
+        let totals = [0, 1].map(|k| flags[k].iter().filter(|f| **f).count());
+        // The camera that shows the most of both rigs' faults.
+        let mut best: Option<(f64, View, &str, [Fit; 2])> = None;
+        for &(yaw_deg, pitch_deg, name) in ZOOM_VIEWS {
+            let view = View { yaw_deg, pitch_deg };
+            let Some(fits) = zoom_fits(&view, [&rest[0], &rest[1]], [&mesh[0], &mesh[1]], [&flags[0], &flags[1]], o.cell_w, o.cell_h)
+            else {
+                break;
+            };
+            let mut seen = 0.0;
+            for k in 0..2 {
+                if totals[k] > 0 {
+                    let half = Fit { ppu: fits[k].ppu * 0.5, ..fits[k] };
+                    let n = visible(&mesh[k], &sides[k].model.tris, &flags[k], &view, half, o.cell_w / 2, o.cell_h / 2);
+                    seen += n as f64 / totals[k] as f64;
+                }
+            }
+            if best.as_ref().is_none_or(|b| seen > b.0 + 0.05) {
+                best = Some((seen, view, name, fits));
+            }
+        }
+        let (view, view_name, fits) = match best {
+            Some((_, v, n, f)) => (v, n, f),
+            None => {
+                let v = View::default();
+                (v, ZOOM_VIEWS[0].2, [0, 1].map(|k| fit(&v, &[&mesh[k]], o.cell_w, o.cell_h)))
+            }
+        };
+
+        // "POSE: A 86 BAD VERTS, B 12", the larger count in red.
+        let (na, nb) = row.counts();
+        let part = |k: usize, tail: &str| match picks[k] {
+            Some((_, n)) => format!("{} {n}{tail}", labels[k]),
+            None => format!("{} HAS NO SUCH POSE", labels[k]),
+        };
+        let pieces = [
+            (format!("{}: ", row.name), FG),
+            (part(0, " BAD VERTS"), if na > nb { RED } else { FG }),
+            (", ".to_string(), FG),
+            (part(1, ""), if nb > na { RED } else { FG }),
+        ];
+        let len: usize = pieces.iter().map(|p| p.0.chars().count()).sum();
+        let scale = if len * 18 + 24 <= w { 3 } else { 2 };
+        let mut x = 12;
+        for (text, col) in &pieces {
+            img.text(x, y + 10, text, scale, *col);
+            x += text_width(text, scale);
+        }
+        img.text(12, y + 40, &format!("SEEN FROM {view_name}"), 2, DIM);
+
+        for k in 0..2 {
+            let (cx, cy) = (k * o.cell_w, y + ZROW);
+            img.rect(cx + 2, cy, o.cell_w - 4, o.cell_h - 4, [32, 35, 42]);
+            let colors: Vec<[f64; 3]> = flags[k].iter().map(|f| if *f { HOT } else { GREY }).collect();
+            let glow: Vec<f64> = flags[k].iter().map(|f| if *f { 0.85 } else { 0.0 }).collect();
+            let tris = &sides[k].model.tris;
+            draw_mesh_glow(&mut img, cx + 2, cy, o.cell_w - 4, o.cell_h - 4, &mesh[k], tris, &colors, &view, fits[k], Some(&glow));
+            // The whole figure, with the crop boxed.
+            let (ix, iy) = (cx + o.cell_w - iw - 8, cy + 6);
+            img.rect(ix, iy, iw, ih, BG);
+            let fi = fit(&view, &[&mesh[k]], iw, ih);
+            draw_mesh_glow(&mut img, ix, iy, iw, ih, &mesh[k], tris, &colors, &view, fi, Some(&glow));
+            let (hw, hh) = (o.cell_w as f64 * 0.5 / fits[k].ppu, o.cell_h as f64 * 0.5 / fits[k].ppu);
+            let px = |x: f64| ((x - fi.cx) * fi.ppu + iw as f64 * 0.5).clamp(0.0, iw as f64) as usize + ix;
+            let py = |y: f64| ((fi.cy - y) * fi.ppu + ih as f64 * 0.5).clamp(0.0, ih as f64) as usize + iy;
+            outline(&mut img, px(fits[k].cx - hw), py(fits[k].cy + hh), px(fits[k].cx + hw), py(fits[k].cy - hh), BOX);
+            if picks[k].is_none() {
+                img.text(cx + 14, cy + 12, "NO SUCH POSE: AT REST", 2, DIM);
+            }
+        }
+    }
+    img
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rows_rank_by_the_larger_count() {
+        let rows = rank_rows(
+            &["arm_up.L", "hip_forward.L", "knee.L", "calm"],
+            &[12, 3, 40, 0],
+            &["hip_forward.L", "arm_up.L", "calm", "finger_curl.L"],
+            &[86, 9, 0, 5],
+            3,
+        );
+        let got: Vec<(&str, (usize, usize))> = rows.iter().map(|r| (r.name.as_str(), r.counts())).collect();
+        // By the larger of the two counts, not the sum; the pose neither
+        // rig fails is left out, and the fourth-worst is cut.
+        assert_eq!(got, vec![("hip_forward.L", (3, 86)), ("knee.L", (40, 0)), ("arm_up.L", (12, 9))]);
+        // A pose only one rig has is kept, and says so.
+        assert_eq!(rows[1].b, None);
+        let all = rank_rows(&["a"], &[1], &["b"], &[2], 9);
+        assert_eq!(all.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(), vec!["b", "a"]);
+        assert_eq!((all[0].a, all[0].b), (None, Some((0, 2))));
+    }
+
+    #[test]
+    fn the_headline_names_the_better_rig() {
+        let mask = [];
+        let info = |score, pass, fails| SheetInfo { title: "", mask: &mask, score, pass, fails };
+        let (h, d) = zoom_headline(&info(15.1, false, 7), &info(59.9, false, 2), "TRIPO", "OURS", 610, 140);
+        assert_eq!(h, "OURS IS BETTER: 59.9 VS 15.1 OUT OF 100");
+        assert_eq!(d, "OURS VS TRIPO: FAILING FINDINGS 2 VS 7, BAD VERTS OVER ALL POSES 140 VS 610");
+        // The gate comes before the score.
+        let (h, _) = zoom_headline(&info(70.0, true, 0), &info(90.0, false, 1), "A", "B", 0, 4);
+        assert_eq!(h, "A PASSES THE GATE, B DOES NOT");
+        let (h, _) = zoom_headline(&info(44.9, false, 2), &info(80.0, false, 3), "TRIPO", "OURS", 30, 41);
+        assert_eq!(h, "MIXED: OURS SCORES 80.0 VS 44.9 BUT FAILS MORE");
+        let (h, _) = zoom_headline(&info(61.0, false, 2), &info(61.4, false, 2), "A", "B", 9, 9);
+        assert!(h.starts_with("ABOUT EVEN"), "{h}");
+    }
 }

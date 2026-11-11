@@ -29,6 +29,8 @@ Pure Rust, permissive deps only (serde, serde_json, ron, png, rayon).
                     [--source base.glb] [--candidate other.glb] [--skintokens]
                     [--all-regions]
     weights compare a.glb b.glb --out ab.png        # same poses side by side
+    weights compare a.glb b.glb --out ab.png --zoom --label-a THEIRS --label-b OURS
+                                                    # which rig is better, worst poses first, cropped to the fault
     weights dump    fixed.glb --out weights.json    # per-vertex weights for DCCs
     weights fixture all --out fixtures/             # test mannequins
 
@@ -91,10 +93,10 @@ alone collapses the joint, and the half-turn helper holds the volume.
 A stylized hero game mesh, fresh SkinTokens rig (seed 0), standardized
 (2026-10-05; sheets in `~/Downloads/twist-bones/`):
 
-| | raw | after `weights fix` |
-|---|---|---|
-| without helpers | 47.3 (4 failing) | 62.8 (4) |
-| with helpers | 47.6 (4) | 68.8 (2) |
+|                 | raw              | after `weights fix` |
+| --------------- | ---------------- | ------------------- |
+| without helpers | 47.3 (4 failing) | 62.8 (4)            |
+| with helpers    | 47.6 (4)         | 68.8 (2)            |
 
 Arms up and right arm forward are clean. Still failing: right thigh
 stretch in `hip_forward.R` (9 verts, the crotch strip between the legs)
@@ -139,13 +141,13 @@ map in the `weightforge_bad` color attribute), Pose Sheet, and Fix
 
 ## References
 
-- Dionne & de Lasa, *Geodesic Voxel Binding for Production Character
-  Meshes*, SCA 2013 (geodesic distances, binding falloff). Implemented from
+- Dionne & de Lasa, _Geodesic Voxel Binding for Production Character
+  Meshes_, SCA 2013 (geodesic distances, binding falloff). Implemented from
   the paper; no reference code used.
-- Abdrashitov et al., *Robust Skin Weights Transfer via Weight
-  Inpainting*, SIGGRAPH Asia 2023 (match thresholds, harmonic inpainting).
+- Abdrashitov et al., _Robust Skin Weights Transfer via Weight
+  Inpainting_, SIGGRAPH Asia 2023 (match thresholds, harmonic inpainting).
   Implemented from the paper; no reference code used.
-- Kavan et al., *Geometric Skinning with Approximate Dual Quaternion
-  Blending*, 2008 (DQS targets for optimize).
+- Kavan et al., _Geometric Skinning with Approximate Dual Quaternion
+  Blending_, 2008 (DQS targets for optimize).
 
 License: MIT (Rust core, CLI); GPL-3.0-or-later (Blender extension).

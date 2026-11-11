@@ -18,8 +18,19 @@ USAGE:
                   [--all-regions] [--sheet before_after.png]
   weights sheet   <in.glb> --out sheet.png [--poses rom.ron] [--cols N]
   weights compare <a.glb> <b.glb> --out ab.png [--poses rom.ron]
+                  [--zoom [--rows N] [--label-a NAME] [--label-b NAME]] [--poses-b rom_b.ron]
   weights dump    <in.glb> --out weights.json   (per-vertex joints/weights, for DCC import)
   weights fixture <fault|all> --out <dir>
+
+COMPARE:
+  --zoom        the sheet for judging two rigs at a glance: a headline
+                saying which is better, then one pose a row, the pose with
+                the most failing vertices on either rig first (--rows,
+                default 5), both rigs from the same camera and cropped to
+                where they fail, failing vertices red on grey
+  --label-a/-b  what to call each rig on the sheet (default A and B)
+  --poses-b     the second rig's own pose set, when its bones are named
+                differently (poses are matched by name)
 
 FIX:
   Builds candidates (the input is always candidate 0), measures each one
@@ -58,8 +69,22 @@ struct Args {
     flags: Vec<(String, Option<String>)>,
 }
 
-const VALUED: &[&str] =
-    &["--poses", "--voxels", "--out", "--cols", "--method", "--source", "--candidate", "--sheet", "--report", "--vertex-json"];
+const VALUED: &[&str] = &[
+    "--poses",
+    "--voxels",
+    "--out",
+    "--cols",
+    "--method",
+    "--source",
+    "--candidate",
+    "--sheet",
+    "--report",
+    "--vertex-json",
+    "--poses-b",
+    "--rows",
+    "--label-a",
+    "--label-b",
+];
 
 impl Args {
     fn parse(raw: Vec<String>) -> Result<Args, String> {
@@ -105,7 +130,11 @@ fn ctx_opts<'a>(a: &Args, set: Option<&'a wf::poses::PoseSet>) -> Result<CtxOpts
 }
 
 fn load_poses(a: &Args) -> Result<Option<wf::poses::PoseSet>, String> {
-    match a.get("--poses") {
+    load_poses_from(a, "--poses")
+}
+
+fn load_poses_from(a: &Args, flag: &str) -> Result<Option<wf::poses::PoseSet>, String> {
+    match a.get(flag) {
         Some(p) => {
             let text = std::fs::read_to_string(p).map_err(|e| format!("{p}: {e}"))?;
             wf::poses::parse_pose_set(&text).map(Some)
@@ -209,8 +238,21 @@ fn cmd_compare(a: &Args) -> ExitCode {
         Ok(o) => o,
         Err(e) => return fail(e),
     };
+    let set_b = match load_poses_from(a, "--poses-b") {
+        Ok(s) => s,
+        Err(e) => return fail(e),
+    };
+    let opts_b = match ctx_opts(a, set_b.as_ref().or(set.as_ref())) {
+        Ok(o) => o,
+        Err(e) => return fail(e),
+    };
+    let rows = match a.get("--rows").map(|v| v.parse::<usize>()) {
+        None => 5,
+        Some(Ok(n)) if (1..=12).contains(&n) => n,
+        Some(_) => return fail("--rows must be 1..12"),
+    };
     let ra = wf::check(Path::new(pa), &opts);
-    let rb = wf::check(Path::new(pb), &opts);
+    let rb = wf::check(Path::new(pb), &opts_b);
     let ((ma, ca, ea, rpa), (mb, cb, eb, rpb)) = match (ra, rb) {
         (Ok(x), Ok(y)) => (x, y),
         (Err(e), _) | (_, Err(e)) => return fail(e),
@@ -231,7 +273,17 @@ fn cmd_compare(a: &Args) -> ExitCode {
         w: &mb.weights,
         info: wf::render::SheetInfo { title: &rpb.file, mask: &mask_b, score: rpb.score, pass: rpb.pass, fails: fails(&rpb) },
     };
-    let img = wf::render::compare(&sa, &sb, &wf::render::SheetOpts::default());
+    let img = if a.has("--zoom") {
+        let o = wf::render::ZoomOpts {
+            rows,
+            label_a: a.get("--label-a").unwrap_or("A"),
+            label_b: a.get("--label-b").unwrap_or("B"),
+            ..Default::default()
+        };
+        wf::render::compare_zoom(&sa, &sb, &o)
+    } else {
+        wf::render::compare(&sa, &sb, &wf::render::SheetOpts::default())
+    };
     if let Err(e) = write_png(out, &img) {
         return fail(e);
     }

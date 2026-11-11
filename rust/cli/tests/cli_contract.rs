@@ -52,6 +52,11 @@ fn exit_codes_and_outputs() {
     assert_eq!(&std::fs::read(&png).unwrap()[1..4], b"PNG");
     let cmp = d.join("c.png");
     assert_eq!(run(&["compare", bleed.to_str().unwrap(), fixed.to_str().unwrap(), "--out", cmp.to_str().unwrap()]).0, 0);
+    let zoom = d.join("z.png");
+    let args = ["compare", bleed.to_str().unwrap(), fixed.to_str().unwrap(), "--out", zoom.to_str().unwrap()];
+    assert_eq!(run(&[&args[..], &["--zoom", "--rows", "4", "--label-a", "before", "--label-b", "after"]].concat()).0, 0);
+    assert_eq!(&std::fs::read(&zoom).unwrap()[1..4], b"PNG");
+    assert_eq!(run(&[&args[..], &["--zoom", "--rows", "0"]].concat()).0, 2);
     let _ = std::fs::remove_dir_all(&d);
 }
 

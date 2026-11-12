@@ -57,6 +57,7 @@ PROBE:
                 line then has the pose's intersect vertices and their
                 share of all vertices, the rig's share over all poses, and
                 the deepest poke as a share of the entered limb's radius
+                (depth; depth_m in model units, metres in glTF)
   --max         at most N cases (default 5 by stretch, 3 by intersect)
 
 FIX:
@@ -405,6 +406,7 @@ fn probe_pokes(side: &wf::render::Side, o: &wf::render::ZoomOpts, dir: &Path, fi
                 "intersect_share": r4(c.pokes as f64 / nv),
                 "rig_pokes_share": r4(rig_pokes as f64 / nv),
                 "depth": (c.depth.share * 100.0).round() / 100.0,
+                "depth_m": (c.depth.dist * 1000.0).round() / 1000.0,
                 "depth_into": into,
                 "view": c.view,
             })

@@ -4,10 +4,21 @@
 //! so a hand hanging next to a thigh is far from the thigh bone even though
 //! it is close in a straight line. Works on multi-shell, non-manifold,
 //! self-intersecting meshes because it only rasterizes triangles.
+//!
+//! The inside is what a flood from outside cannot reach, plus what a vote
+//! of rays calls inside: generated meshes keep small openings, and one is
+//! enough for the flood to fill the whole body, leaving only the shell
+//! solid (a bone's distance then became a walk along the skin from one
+//! seed). Six half-rays along the axes reach each voxel from outside the
+//! grid; one says "inside" when it crossed some shell an odd number of
+//! times. A small hole fools only the rays that pass through it, so four
+//! of six decide. Shells count apart, so overlapping shells (an arm tube
+//! through the torso) and flipped faces stay right.
 
 use crate::math::{Vec3, segment_distance, v3};
 use crate::scene::Model;
 use rayon::prelude::*;
+use serde::Serialize;
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 
@@ -46,7 +57,195 @@ impl Grid {
     }
 }
 
+/// How sealed the body is, from the voxel fill (`voxelize`).
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct Solid {
+    /// Holes in the body's surface (loops of edges with one face).
+    pub openings: usize,
+    /// The largest opening's extent, as a fraction of the body's size.
+    pub largest_opening: f64,
+    /// Share of the inside that the outside flood reached through the
+    /// openings and only the ray vote put back.
+    pub leaked: f64,
+    /// Share of the body's inside (or near it) where the rays split three
+    /// to three: the fill cannot tell inside from outside there.
+    pub contested: f64,
+    /// False when too much is contested (`MAX_CONTESTED`) for distances
+    /// through the body to be trusted.
+    pub trusted: bool,
+}
+
+/// More of the inside than this contested and the fill is not trusted.
+pub const MAX_CONTESTED: f64 = 0.05;
+
+/// Six-ray inside votes per voxel (see the module docs). `use_tri` picks
+/// the triangles that count.
+fn ray_votes(g: &Grid, pos: &[Vec3], tris: &[[u32; 3]], use_tri: &dyn Fn(usize) -> bool) -> Vec<u8> {
+    // Shells: connected components over shared vertices.
+    let mut parent: Vec<u32> = (0..pos.len() as u32).collect();
+    fn find(p: &mut [u32], mut x: u32) -> u32 {
+        while p[x as usize] != x {
+            p[x as usize] = p[p[x as usize] as usize];
+            x = p[x as usize];
+        }
+        x
+    }
+    for t in tris {
+        let a = find(&mut parent, t[0]);
+        for &v in &t[1..] {
+            let b = find(&mut parent, v);
+            if a != b {
+                parent[b as usize] = a;
+            }
+        }
+    }
+    let shell: Vec<u32> = tris.iter().map(|t| find(&mut parent, t[0])).collect();
+    let mut votes = vec![0u8; g.cell.len()];
+    let n = g.n;
+    // Rays sit a hair off the voxel centres so they never run exactly
+    // through a vertex or an edge of a grid-aligned mesh.
+    let (eu, ev) = (0.013_7, 0.029_1);
+    let mut odd = vec![false; pos.len()];
+    for axis in 0..3 {
+        let (ua, va) = ((axis + 1) % 3, (axis + 2) % 3);
+        let (nu, nv) = (n[ua], n[va]);
+        let mut hits: Vec<Vec<(f64, u32)>> = vec![Vec::new(); nu * nv];
+        for (ti, t) in tris.iter().enumerate() {
+            if !use_tri(ti) {
+                continue;
+            }
+            let c: Vec<[f64; 3]> = t.iter().map(|&i| g.coord(pos[i as usize])).collect();
+            let (a, b, cc) = ((c[0][ua], c[0][va]), (c[1][ua], c[1][va]), (c[2][ua], c[2][va]));
+            let area = (b.0 - a.0) * (cc.1 - a.1) - (b.1 - a.1) * (cc.0 - a.0);
+            if area.abs() < 1e-14 {
+                continue;
+            }
+            let (lo_u, hi_u) = (a.0.min(b.0).min(cc.0), a.0.max(b.0).max(cc.0));
+            let (lo_v, hi_v) = (a.1.min(b.1).min(cc.1), a.1.max(b.1).max(cc.1));
+            let u0 = (lo_u - eu).ceil().max(0.0) as usize;
+            let v0 = (lo_v - ev).ceil().max(0.0) as usize;
+            let u1 = (hi_u - eu).floor();
+            let v1 = (hi_v - ev).floor();
+            if u1 < 0.0 || v1 < 0.0 {
+                continue;
+            }
+            for iv in v0..=(v1 as usize).min(nv - 1) {
+                for iu in u0..=(u1 as usize).min(nu - 1) {
+                    let p = (iu as f64 + eu, iv as f64 + ev);
+                    let e = |s: (f64, f64), t: (f64, f64)| (t.0 - s.0) * (p.1 - s.1) - (t.1 - s.1) * (p.0 - s.0);
+                    let (e0, e1, e2) = (e(a, b), e(b, cc), e(cc, a));
+                    if !((e0 > 0.0 && e1 > 0.0 && e2 > 0.0) || (e0 < 0.0 && e1 < 0.0 && e2 < 0.0)) {
+                        continue;
+                    }
+                    let depth = (e1 * c[0][axis] + e2 * c[1][axis] + e0 * c[2][axis]) / area;
+                    hits[iv * nu + iu].push((depth, shell[ti]));
+                }
+            }
+        }
+        for iv in 0..nv {
+            for iu in 0..nu {
+                let list = &mut hits[iv * nu + iu];
+                if list.is_empty() {
+                    continue;
+                }
+                list.sort_by(|x, y| x.0.partial_cmp(&y.0).unwrap());
+                let cell = |k: usize| {
+                    let mut q = [0usize; 3];
+                    q[axis] = k;
+                    q[ua] = iu;
+                    q[va] = iv;
+                    g.idx(q[0], q[1], q[2])
+                };
+                // From the low end, then from the high end.
+                for from_low in [true, false] {
+                    let mut count = 0usize;
+                    let mut h = 0usize;
+                    let order: Vec<usize> = if from_low { (0..n[axis]).collect() } else { (0..n[axis]).rev().collect() };
+                    for k in order {
+                        let kf = k as f64;
+                        while h < list.len() {
+                            let (d, sh) = if from_low { list[h] } else { list[list.len() - 1 - h] };
+                            if (from_low && d >= kf) || (!from_low && d <= kf) {
+                                break;
+                            }
+                            let o = &mut odd[sh as usize];
+                            *o = !*o;
+                            if *o {
+                                count += 1;
+                            } else {
+                                count -= 1;
+                            }
+                            h += 1;
+                        }
+                        if count > 0 {
+                            votes[cell(k)] += 1;
+                        }
+                    }
+                    for &(_, sh) in list.iter() {
+                        odd[sh as usize] = false;
+                    }
+                }
+            }
+        }
+    }
+    votes
+}
+
+/// Holes in a surface: loops of edges that have one face, as (count,
+/// largest loop's bounding-box extent).
+fn openings(pos: &[Vec3], tris: &[[u32; 3]], use_tri: &dyn Fn(usize) -> bool) -> (usize, f64) {
+    let mut edges: std::collections::HashMap<(u32, u32), u32> = std::collections::HashMap::new();
+    for (ti, t) in tris.iter().enumerate() {
+        if !use_tri(ti) {
+            continue;
+        }
+        for k in 0..3 {
+            let (a, b) = (t[k], t[(k + 1) % 3]);
+            *edges.entry((a.min(b), a.max(b))).or_default() += 1;
+        }
+    }
+    let mut parent: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
+    fn find(p: &mut std::collections::HashMap<u32, u32>, x: u32) -> u32 {
+        let mut r = x;
+        while let Some(&q) = p.get(&r) {
+            if q == r {
+                break;
+            }
+            r = q;
+        }
+        p.insert(x, r);
+        r
+    }
+    let mut open: Vec<(u32, u32)> = edges.iter().filter(|e| *e.1 == 1).map(|e| *e.0).collect();
+    open.sort_unstable();
+    for &(a, b) in &open {
+        parent.entry(a).or_insert(a);
+        parent.entry(b).or_insert(b);
+        let (ra, rb) = (find(&mut parent, a), find(&mut parent, b));
+        if ra != rb {
+            parent.insert(rb, ra);
+        }
+    }
+    let verts: Vec<u32> = parent.keys().copied().collect();
+    let mut boxes: std::collections::BTreeMap<u32, (Vec3, Vec3)> = std::collections::BTreeMap::new();
+    for v in verts {
+        let r = find(&mut parent, v);
+        let p = pos[v as usize];
+        let e = boxes.entry(r).or_insert((p, p));
+        e.0 = e.0.min(p);
+        e.1 = e.1.max(p);
+    }
+    let largest = boxes.values().map(|(lo, hi)| (*hi - *lo).max_elem()).fold(0.0, f64::max);
+    (boxes.len(), largest)
+}
+
 pub fn voxelize(pos: &[Vec3], tris: &[[u32; 3]], res: usize) -> Grid {
+    voxelize_body(pos, tris, res, None).0
+}
+
+/// `voxelize`, and how sealed the body is (`body[t]` marks the triangles
+/// of the body, as against open pieces such as a cape; all when `None`).
+pub fn voxelize_body(pos: &[Vec3], tris: &[[u32; 3]], res: usize, body: Option<&[bool]>) -> (Grid, Solid) {
     let mut lo = v3(f64::MAX, f64::MAX, f64::MAX);
     let mut hi = -lo;
     for p in pos {
@@ -112,12 +311,52 @@ pub fn voxelize(pos: &[Vec3], tris: &[[u32; 3]], res: usize) -> Grid {
         push(x, y, z - 1);
         push(x, y, z + 1);
     }
+    let all = |_: usize| true;
+    let votes = ray_votes(&g, pos, tris, &all);
+    let mut flooded = 0usize;
     for i in 0..total {
-        if g.cell[i] == 0 && !outside[i] {
+        if g.cell[i] == 0 && (!outside[i] || votes[i] >= 4) {
+            if outside[i] {
+                flooded += 1;
+            }
             g.cell[i] = 2;
         }
     }
-    g
+    // How sealed the body is: its own triangles only, so an open piece
+    // (a cape is a sheet) is not counted as an opening.
+    let is_body = |t: usize| body.is_none_or(|b| b[t]);
+    let body_votes = if body.is_some_and(|b| b.iter().any(|x| !x)) { ray_votes(&g, pos, tris, &is_body) } else { votes };
+    let (mut inside, mut tied) = (0usize, 0usize);
+    for i in 0..total {
+        if g.cell[i] == 1 {
+            continue;
+        }
+        if body_votes[i] >= 4 || (g.cell[i] == 2 && !outside[i]) {
+            inside += 1;
+        } else if body_votes[i] == 3 {
+            tied += 1;
+        }
+    }
+    let (n_open, largest) = openings(pos, tris, &is_body);
+    let interior = (0..total).filter(|&i| g.cell[i] == 2).count();
+    let contested = tied as f64 / (inside + tied).max(1) as f64;
+    let scale = {
+        let mut lo = v3(f64::MAX, f64::MAX, f64::MAX);
+        let mut hi = -lo;
+        for p in pos {
+            lo = lo.min(*p);
+            hi = hi.max(*p);
+        }
+        (hi - lo).max_elem().max(1e-9)
+    };
+    let solid = Solid {
+        openings: n_open,
+        largest_opening: (largest / scale * 1e4).round() / 1e4,
+        leaked: (flooded as f64 / interior.max(1) as f64 * 1e4).round() / 1e4,
+        contested: (contested * 1e4).round() / 1e4,
+        trusted: contested <= MAX_CONTESTED,
+    };
+    (g, solid)
 }
 
 /// Per-vertex nearest bones by voxel geodesic distance.
@@ -127,6 +366,9 @@ pub struct Geo {
     /// Distances at or beyond `cap` mean "unreachable / far".
     pub cap: f32,
     pub res: usize,
+    /// How sealed the body is (its openings, and whether the fill can be
+    /// trusted).
+    pub solid: Solid,
 }
 
 pub const K: usize = 8;
@@ -276,7 +518,8 @@ fn sample(g: &Grid, dist: &[f32], p: Vec3, cap: f32) -> f32 {
 
 /// Geodesic distances from every joint in `joints` to every vertex.
 pub fn geodesics(model: &Model, res: usize, joints: &[usize]) -> Geo {
-    let g = voxelize(&model.rest, &model.tris, res);
+    let body: Vec<bool> = model.tris.iter().map(|t| !model.parts[model.vpart[t[0] as usize] as usize].piece).collect();
+    let (g, solid) = voxelize_body(&model.rest, &model.tris, res, Some(&body));
     let cap = (model.scale * 0.75) as f32;
     let nv = model.nverts();
     let mut near: Vec<Vec<(u32, f32)>> = vec![Vec::new(); nv];
@@ -298,5 +541,5 @@ pub fn geodesics(model: &Model, res: usize, joints: &[usize]) -> Geo {
             list.truncate(K);
         });
     }
-    Geo { near, cap, res }
+    Geo { near, cap, res, solid }
 }

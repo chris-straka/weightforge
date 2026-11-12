@@ -54,6 +54,9 @@ pub struct Report {
     /// Poses of the set that could not run on this skeleton (what each one
     /// could not find): those parts of the body went untested.
     pub skipped_poses: Vec<String>,
+    /// How sealed the body is: openings in its surface, and whether the
+    /// voxel fill (distances through the body) can be trusted.
+    pub solid: crate::voxel::Solid,
     pub thresholds: Thresholds,
 }
 
@@ -214,6 +217,21 @@ pub fn build(file: &str, model: &Model, ctx: &Ctx, ev: &Eval) -> Report {
             detail: "UV-seam copies of a vertex carry different weights (cracks when posed)".into(),
         });
     }
+    let solid = ctx.geo.solid.clone();
+    if !solid.trusted {
+        findings.push(Finding {
+            code: "D_OPEN_MESH".into(),
+            severity: "warn".into(),
+            region: "*".into(),
+            verts: 0,
+            detail: format!(
+                "the surface is too open to tell inside from outside ({} openings, {:.0}% of the inside contested): \
+                 distances through the body, regions and bleed are not to be trusted",
+                solid.openings,
+                solid.contested * 100.0
+            ),
+        });
+    }
     findings.sort_by(|a, b| (a.severity != "fail", &a.region, &a.code).cmp(&(b.severity != "fail", &b.region, &b.code)));
     regions.sort_by(|a, b| a.score.partial_cmp(&b.score).unwrap().then(a.name.cmp(&b.name)));
     // Half the vertex mean, half the worst region: one broken limb or piece
@@ -241,6 +259,7 @@ pub fn build(file: &str, model: &Model, ctx: &Ctx, ev: &Eval) -> Report {
         regions,
         worst_poses,
         skipped_poses: ctx.skipped_poses.clone(),
+        solid,
         thresholds: th.clone(),
     }
 }
@@ -251,6 +270,14 @@ pub fn text(r: &Report) -> String {
     s += &format!("{verdict} {} score {:.1}/100 ({}, {} verts, {} bones, {} poses)\n", r.file, r.score, r.class, r.verts, r.bones, r.poses);
     for p in &r.skipped_poses {
         s += &format!("pose not tested: {p}\n");
+    }
+    if r.solid.leaked > 0.0 {
+        s += &format!(
+            "openings: {} in the surface (largest {:.0}% of the body's size); {:.0}% of the inside was filled by ray votes\n",
+            r.solid.openings,
+            r.solid.largest_opening * 100.0,
+            r.solid.leaked * 100.0
+        );
     }
     for f in &r.findings {
         s += &format!("{} {} [{}]: {} ({} verts)\n", f.code, f.region, f.severity, f.detail, f.verts);

@@ -669,6 +669,22 @@ fn cmd_fixture(a: &Args) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// The flags each command takes; anything else is a usage error (a typo
+/// such as `--jsn` used to be ignored without a word).
+fn flags_of(cmd: &str) -> Option<Vec<&'static str>> {
+    const CTX: [&str; 3] = ["--poses", "--no-clips", "--voxels"];
+    let own: &[&str] = match cmd {
+        "check" => &["--json", "--vertex-json"],
+        "sheet" => &["--out", "--cols"],
+        "probe" => &["--out", "--number-from"],
+        "compare" => &["--out", "--poses-b", "--rows", "--label-a", "--label-b", "--zoom", "--clips"],
+        "fix" => &["--out", "--method", "--source", "--candidate", "--skintokens", "--all-regions", "--report", "--sheet"],
+        "dump" | "fixture" => return Some(vec!["--out"]),
+        _ => return None,
+    };
+    Some(CTX.iter().chain(own).copied().collect())
+}
+
 fn main() -> ExitCode {
     let raw: Vec<String> = std::env::args().skip(1).collect();
     if raw.is_empty() || raw.iter().any(|a| a == "-h" || a == "--help") {
@@ -683,6 +699,12 @@ fn main() -> ExitCode {
         Ok(a) => a,
         Err(e) => return fail(e),
     };
+    let Some(cmd) = a.pos.first() else { return fail("no command (try --help)") };
+    if let Some(allowed) = flags_of(cmd) {
+        if let Some((f, _)) = a.flags.iter().find(|(f, _)| !allowed.contains(&f.as_str())) {
+            return fail(format!("unknown flag {f} for {cmd} (try --help)"));
+        }
+    }
     match a.pos[0].as_str() {
         "check" => cmd_check(&a),
         "fix" => cmd_fix(&a),

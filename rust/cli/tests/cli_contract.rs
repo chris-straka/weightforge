@@ -128,3 +128,24 @@ fn skintokens_candidate_is_scored() {
     assert!(!d.join("x.glb").exists());
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// A mistyped or misplaced flag is a usage error, not silently ignored
+/// (`--jsn` used to print the text report and exit 0).
+#[test]
+fn unknown_flags_are_an_error() {
+    let d = tmp("flags");
+    let ds = d.to_str().unwrap();
+    assert_eq!(run(&["fixture", "clean", "--out", ds]).0, 0);
+    let clean = d.join("mannequin_clean.glb");
+    let c = clean.to_str().unwrap();
+    let (code, _, err) = run(&["check", c, "--jsn"]);
+    assert_eq!(code, 2, "{err}");
+    assert!(err.contains("--jsn"), "{err}");
+    // A flag of another command is unknown here too.
+    assert_eq!(run(&["check", c, "--zoom"]).0, 2);
+    assert_eq!(run(&["fix", c, "--out", d.join("f.glb").to_str().unwrap(), "--rows", "3"]).0, 2);
+    assert!(!d.join("f.glb").exists());
+    // Known ones still work.
+    assert_eq!(run(&["check", c, "--json", "--no-clips"]).0, 0);
+    let _ = std::fs::remove_dir_all(&d);
+}

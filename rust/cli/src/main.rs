@@ -18,7 +18,8 @@ USAGE:
                   [--all-regions] [--sheet before_after.png]
   weights sheet   <in.glb> --out sheet.png [--poses rom.ron] [--cols N]
   weights compare <a.glb> <b.glb> --out ab.png [--poses rom.ron]
-                  [--zoom [--rows N] [--label-a NAME] [--label-b NAME]] [--poses-b rom_b.ron]
+                  [--zoom [--rows N] [--label-a NAME] [--label-b NAME] [--clips DIR]]
+                  [--poses-b rom_b.ron]
   weights dump    <in.glb> --out weights.json   (per-vertex joints/weights, for DCC import)
   weights fixture <fault|all> --out <dir>
 
@@ -27,7 +28,14 @@ COMPARE:
                 saying which is better, then one pose a row, the pose with
                 the most failing vertices on either rig first (--rows,
                 default 5), both rigs from the same camera and cropped to
-                where they fail, failing vertices red on grey
+                where they fail, grey clay under a side light with the
+                failing faces solid red; a last row shows where each rig
+                loses its score
+  --clips <dir> with --zoom: a two-second loop for each row (both rigs from
+                rest into the pose and back, same camera and crop) as
+                <dir>/<rank>_<pose>.mp4, and <dir>/reel.mp4 with every loop
+                twice. Needs ffmpeg on PATH; without it the frames stay in
+                <dir>/<rank>_<pose>/ as PNG
   --label-a/-b  what to call each rig on the sheet (default A and B)
   --poses-b     the second rig's own pose set, when its bones are named
                 differently (poses are matched by name)
@@ -84,6 +92,7 @@ const VALUED: &[&str] = &[
     "--rows",
     "--label-a",
     "--label-b",
+    "--clips",
 ];
 
 impl Args {
@@ -227,6 +236,83 @@ fn cmd_sheet(a: &Args) -> ExitCode {
     if rep.pass { ExitCode::SUCCESS } else { ExitCode::from(1) }
 }
 
+/// `compare --zoom --clips`: each row's loop as PNG frames, then as an
+/// mp4 when ffmpeg is there (the frames are removed once it is written),
+/// and a reel of every loop played twice.
+fn write_clips(dir: &Path, sa: &wf::render::Side, sb: &wf::render::Side, o: &wf::render::ZoomOpts) -> Result<(), String> {
+    let io = |e: std::io::Error| format!("{}: {e}", dir.display());
+    std::fs::create_dir_all(dir).map_err(io)?;
+    let mut rows: Vec<String> = Vec::new();
+    let mut err = None;
+    wf::render::compare_zoom_clips(sa, sb, o, |r, name, f, img| {
+        if r == rows.len() {
+            let safe: String = name.chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '_' }).collect();
+            rows.push(format!("{:02}_{safe}", r + 1));
+        }
+        let d = dir.join(&rows[r]);
+        let res = std::fs::create_dir_all(&d).and_then(|_| std::fs::write(d.join(format!("{f:03}.png")), img.png_bytes()));
+        if let Err(e) = res {
+            err.get_or_insert(io(e));
+        }
+    });
+    if let Some(e) = err {
+        return Err(e);
+    }
+    let ffmpeg = |args: &[&str]| {
+        std::process::Command::new("ffmpeg").args(["-y", "-loglevel", "error"]).args(args).status().map(|s| s.success()).unwrap_or(false)
+    };
+    let fps = wf::render::CLIP_FPS.to_string();
+    let mut made = Vec::new();
+    for row in &rows {
+        let (frames, mp4) = (dir.join(row), dir.join(format!("{row}.mp4")));
+        let pattern = frames.join("%03d.png");
+        if ffmpeg(&[
+            "-framerate",
+            &fps,
+            "-i",
+            &pattern.to_string_lossy(),
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-crf",
+            "18",
+            "-movflags",
+            "+faststart",
+            &mp4.to_string_lossy(),
+        ]) {
+            let _ = std::fs::remove_dir_all(&frames);
+            println!("{}", mp4.display());
+            made.push(format!("{row}.mp4"));
+        } else {
+            eprintln!("weights: no mp4 for {row} (is ffmpeg on PATH?); its frames are in {}", frames.display());
+        }
+    }
+    if !made.is_empty() {
+        let list = dir.join("reel.txt");
+        let text: String = made.iter().flat_map(|m| [m, m]).map(|m| format!("file '{m}'\n")).collect();
+        std::fs::write(&list, text).map_err(io)?;
+        let reel = dir.join("reel.mp4");
+        if ffmpeg(&[
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            &list.to_string_lossy(),
+            "-c",
+            "copy",
+            "-movflags",
+            "+faststart",
+            &reel.to_string_lossy(),
+        ]) {
+            println!("{}", reel.display());
+        }
+        let _ = std::fs::remove_file(&list);
+    }
+    Ok(())
+}
+
 fn cmd_compare(a: &Args) -> ExitCode {
     let (Some(pa), Some(pb)) = (a.pos.get(1), a.pos.get(2)) else { return fail("compare needs two .glb files") };
     let Some(out) = a.get("--out") else { return fail("compare needs --out <file.png>") };
@@ -273,17 +359,30 @@ fn cmd_compare(a: &Args) -> ExitCode {
         w: &mb.weights,
         info: wf::render::SheetInfo { title: &rpb.file, mask: &mask_b, score: rpb.score, pass: rpb.pass, fails: fails(&rpb) },
     };
+    let worst =
+        |r: &wf::report::Report| r.regions.first().map(|x| format!("WORST PART: {} ({:.0}/100)", x.label, x.score)).unwrap_or_default();
+    let (note_a, note_b) = (worst(&rpa), worst(&rpb));
+    let zoom = wf::render::ZoomOpts {
+        rows,
+        label_a: a.get("--label-a").unwrap_or("A"),
+        label_b: a.get("--label-b").unwrap_or("B"),
+        note_a: &note_a,
+        note_b: &note_b,
+        ..Default::default()
+    };
     let img = if a.has("--zoom") {
-        let o = wf::render::ZoomOpts {
-            rows,
-            label_a: a.get("--label-a").unwrap_or("A"),
-            label_b: a.get("--label-b").unwrap_or("B"),
-            ..Default::default()
-        };
-        wf::render::compare_zoom(&sa, &sb, &o)
+        wf::render::compare_zoom(&sa, &sb, &zoom)
     } else {
         wf::render::compare(&sa, &sb, &wf::render::SheetOpts::default())
     };
+    if let Some(dir) = a.get("--clips") {
+        if !a.has("--zoom") {
+            return fail("--clips needs --zoom");
+        }
+        if let Err(e) = write_clips(Path::new(dir), &sa, &sb, &zoom) {
+            return fail(e);
+        }
+    }
     if let Err(e) = write_png(out, &img) {
         return fail(e);
     }

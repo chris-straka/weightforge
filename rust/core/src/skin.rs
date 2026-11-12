@@ -9,6 +9,28 @@ use crate::poses::Pose;
 use crate::scene::{Model, VW, Weights, globals};
 use rayon::prelude::*;
 
+/// `pose` taken `t` of the way from rest (0) to itself (1): its bends
+/// scaled, its keyed nodes eased from their rest transforms. For showing a
+/// pose arrive, not for measuring.
+pub fn pose_at(model: &Model, pose: &Pose, t: f64) -> Pose {
+    let moves = pose.moves.iter().map(|&(j, axis, ang)| (j, axis, ang * t)).collect();
+    let locals = pose
+        .locals
+        .iter()
+        .map(|&(n, pt, pr, ps)| {
+            let (rt, rr, rs) = match model.skel.nodes.get(n) {
+                Some(nd) => match nd.matrix {
+                    Some(m) => (m.translation(), m.rotation(), v3(1.0, 1.0, 1.0)),
+                    None => (nd.t, nd.r, nd.s),
+                },
+                None => (Vec3::ZERO, Quat::IDENTITY, v3(1.0, 1.0, 1.0)),
+            };
+            (n, pt.map(|x| rt.lerp(x, t)), pr.map(|x| rr.slerp(x, t)), ps.map(|x| rs.lerp(x, t)))
+        })
+        .collect();
+    Pose { name: pose.name.clone(), moves, locals }
+}
+
 pub fn joint_matrices(model: &Model, pose: &Pose) -> Vec<Mat4> {
     let sk = &model.skel;
     let mut nodes = sk.nodes.clone();

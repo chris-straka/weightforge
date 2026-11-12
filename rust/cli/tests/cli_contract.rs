@@ -57,6 +57,12 @@ fn exit_codes_and_outputs() {
     assert_eq!(run(&[&args[..], &["--zoom", "--rows", "4", "--label-a", "before", "--label-b", "after"]].concat()).0, 0);
     assert_eq!(&std::fs::read(&zoom).unwrap()[1..4], b"PNG");
     assert_eq!(run(&[&args[..], &["--zoom", "--rows", "0"]].concat()).0, 2);
+    // Clips: an mp4 a row where ffmpeg is installed, else the frames.
+    let clips = d.join("clips");
+    assert_eq!(run(&[&args[..], &["--zoom", "--rows", "1", "--clips", clips.to_str().unwrap()]].concat()).0, 0);
+    let made: Vec<String> = std::fs::read_dir(&clips).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    assert!(made.iter().any(|n| n.starts_with("01_")), "{made:?}");
+    assert_eq!(run(&[&args[..], &["--clips", clips.to_str().unwrap()]].concat()).0, 2);
     let _ = std::fs::remove_dir_all(&d);
 }
 

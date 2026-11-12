@@ -29,8 +29,9 @@ Pure Rust, permissive deps only (serde, serde_json, ron, png, rayon).
                     [--source base.glb] [--candidate other.glb] [--skintokens]
                     [--all-regions]
     weights compare a.glb b.glb --out ab.png        # same poses side by side
-    weights compare a.glb b.glb --out ab.png --zoom --label-a THEIRS --label-b OURS
-                                                    # which rig is better, worst poses first, cropped to the fault
+    weights compare a.glb b.glb --out ab.png --zoom --label-a THEIRS --label-b OURS --clips clips/
+                                                    # which rig is better: worst poses first, close-ups in
+                                                    # clay with the failing skin red, a loop for each pose
     weights dump    fixed.glb --out weights.json    # per-vertex weights for DCCs
     weights fixture all --out fixtures/             # test mannequins
 

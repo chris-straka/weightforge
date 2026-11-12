@@ -94,3 +94,38 @@ fn a_recorded_cut_gets_its_crotch_band() {
     let (l, r) = shin_vertices(&m, &legs);
     assert!(w[l] == m.weights[l] && w[r] == m.weights[r]);
 }
+
+#[test]
+fn the_start_weights_survive_a_write() {
+    // A cut file whose left shin carries right-leg weight, as a cut leaves it.
+    let mut f = fixtures::build("clean");
+    let probe = Model::from_glb(fixtures::to_glb(&f)).unwrap();
+    let legs = Legs::of(&probe).unwrap();
+    let (l, _) = shin_vertices(&probe, &legs);
+    let b = (0..f.body_pos.len())
+        .min_by(|&x, &y| (f.body_pos[x] - probe.rest[l]).len().total_cmp(&(f.body_pos[y] - probe.rest[l]).len()))
+        .unwrap();
+    let moved: VW = f.body_w[b].iter().map(|&(j, x)| (legs.mirror[j as usize].map_or(j, |k| k as u32), 0.5 * x)).collect();
+    let mut planted: VW = f.body_w[b].iter().map(|&(j, x)| (j, 0.5 * x)).collect();
+    planted.extend(moved);
+    f.body_w[b] = normalize_vw(planted);
+    let mut glb = fixtures::to_glb(&f);
+    glb.json["meshes"][0]["extras"] = serde_json::json!({"unfuse": {"legs": {"crotch": legs.center.y}}});
+    let bytes = glb.to_bytes();
+    let read = || Model::from_glb(weightforge_core::glb::Glb::parse(&bytes).unwrap()).unwrap();
+    let m = read();
+    assert!(m.weights[l].iter().any(|&(j, x)| legs.side[j as usize] == 2 && x > 0.1), "the fault is in the file");
+    let start = weightforge_core::unfuse::cut_start(&m).expect("a cut file with weight on the wrong leg");
+    // Written from the model as read (the writer keeps the file's bytes
+    // where weights equal the loaded ones), the start weights are in the file.
+    let out = m.write_weights(&start).unwrap().to_bytes();
+    let back = Model::from_glb(weightforge_core::glb::Glb::parse(&out).unwrap()).unwrap();
+    assert!(back.weights[l].iter().all(|&(j, _)| legs.side[j as usize] != 2));
+    // Written from a model whose weights were replaced first, they are lost:
+    // the reason `weights fix` keeps an untouched copy to write from.
+    let mut swapped = read();
+    swapped.weights = start.clone();
+    let lost = swapped.write_weights(&start).unwrap().to_bytes();
+    let back = Model::from_glb(weightforge_core::glb::Glb::parse(&lost).unwrap()).unwrap();
+    assert!(back.weights[l].iter().any(|&(j, x)| legs.side[j as usize] == 2 && x > 0.1));
+}

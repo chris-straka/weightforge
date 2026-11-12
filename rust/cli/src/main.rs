@@ -520,10 +520,25 @@ fn cmd_fix(a: &Args) -> ExitCode {
         Ok(o) => o,
         Err(e) => return fail(e),
     };
-    let model = match wf::scene::Model::load(Path::new(input)) {
+    let mut model = match wf::scene::Model::load(Path::new(input)) {
         Ok(m) => m,
         Err(e) => return fail(e),
     };
+    // A body whose fused legs were cut apart (meshkit unfuse records the
+    // cut): the repair starts from each half following its own leg.
+    // The writer keeps the file's own bytes for every vertex whose weights
+    // equal the loaded ones, so the file is written from an untouched
+    // copy of the model, not from the one the repair starts on.
+    let mut as_read = None;
+    if let Some(w) = wf::unfuse::cut_start(&model) {
+        let moved = (0..model.nverts()).filter(|&v| w[v] != model.weights[v]).count();
+        eprintln!("weights: legs cut apart: {moved} vertices given to their own leg before the fix");
+        as_read = match wf::scene::Model::load(Path::new(input)) {
+            Ok(m) => Some(m),
+            Err(e) => return fail(e),
+        };
+        model.weights = w;
+    }
     let source = match a.get("--source").map(|p| wf::scene::Model::load(Path::new(p))) {
         Some(Ok(m)) => Some(m),
         Some(Err(e)) => return fail(format!("--source: {e}")),
@@ -555,7 +570,7 @@ fn cmd_fix(a: &Args) -> ExitCode {
         all_regions: a.has("--all-regions"),
     };
     let res = wf::fix::fix(&name, &model, &ctx, &fo);
-    let glb = match model.write_weights(&res.weights) {
+    let glb = match as_read.as_ref().unwrap_or(&model).write_weights(&res.weights) {
         Ok(g) => g,
         Err(e) => return fail(e),
     };

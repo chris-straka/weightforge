@@ -415,6 +415,16 @@ pub fn cut_crotch(model: &Model) -> Option<f64> {
     model.glb.arr("meshes").iter().find_map(|m| m.get("extras")?.get("unfuse")?.get("legs")?.get("crotch")?.as_f64())
 }
 
+/// The weights to start a repair from on a body `unfuse.py` cut: the
+/// cut leaves each half with weights interpolated across it, naming both
+/// thighs, and `own_legs` is what they should have been. `None` on a body
+/// that was not cut, or when nothing changes.
+pub fn cut_start(model: &Model) -> Option<Weights> {
+    cut_crotch(model)?;
+    let w = own_legs(model, &model.weights);
+    (w != model.weights).then_some(w)
+}
+
 /// Weights for the crotch of a body whose legs `unfuse.py` cut apart:
 /// first `own_legs`; then skin near the middle plane follows the hips at
 /// and above the crotch, and takes up its leg over `BAND_DOWN` thigh

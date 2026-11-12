@@ -951,17 +951,11 @@ fn fix_once(file: &str, model: &Model, ctx: &Ctx, o: &FixOpts) -> FixResult {
         }
     }
     // Limbs cut apart by meshkit's unfuse (it records its cuts in the
-    // file): skin on one leg's side follows that leg only, the crotch
-    // gets its falloff, and an arm cut free gets the same (unfuse.rs). A
-    // body that was not cut gets no such candidate.
-    if crate::unfuse::cut_crotch(model).is_some() {
-        // Without the falloff: often enough once the cut reaches the hip
-        // joints, and it changes less.
-        let own = crate::unfuse::own_legs(model, &model.weights);
-        if own != model.weights {
-            push("own-legs".into(), own, &mut cands);
-        }
-    }
+    // file): the crotch's falloff on top of each half following its own
+    // leg, and the same for an arm cut free (unfuse.rs). The caller has
+    // already given each half to its own leg (`unfuse::cut_start`: the
+    // weights a cut leaves are interpolated across it and mean nothing).
+    // A body that was not cut gets no such candidate.
     let apart = crate::unfuse::limbs_apart(model, &model.weights);
     if apart != model.weights {
         if o.methods.contains(&Method::Optimize) {

@@ -79,8 +79,9 @@ evidence: [`docs/pick-and-bands.md`](docs/pick-and-bands.md).
 own skeleton (`skintokens skin`, sibling repo `~/Games/_blender/skintokens`,
 Rust, ~20 s on the M4; opt-in, so default runs stay byte-deterministic).
 On a body whose fused legs were cut apart (meshkit `tools/unfuse.py`
-records the cut in the file; see "Legs that share one shell" below) two
-more candidates are built: `own-legs` and `limbs-apart`.
+records the cut in the file; see "Legs that share one shell" below) the
+fix starts from each half following its own leg, and one more candidate
+is built: `limbs-apart`.
 It writes `fixed.glb` (in place: only JOINTS_0/WEIGHTS_0 bytes change,
 never positions or bones), `fixed.report.json` (before/after per region,
 method chosen, candidate scores), and with `--sheet` the A/B picture.
@@ -146,18 +147,20 @@ tearing and collapses instead (measured, `docs/unfuse-log.md`). The
 repair is a cut, and it is a mesh edit, so it is not made here:
 `meshkit/tools/unfuse.py` slits the lump along the plane between the
 legs from the hip joints down and walls each half, and writes the cut
-into the mesh's `extras.unfuse`. On such a file `fix` builds two more
-candidates (`core/src/unfuse.rs`):
+into the mesh's `extras.unfuse`. On such a file `fix`
+(`core/src/unfuse.rs`):
 
-- `own-legs`: skin whose outline (a horizontal cut through the vertex)
-  lies wholly on one leg's side of the middle plane gives up its weight
-  on the other leg's bones to their counterparts on its own (thigh to
-  thigh, shin to shin, helper to helper).
-- `limbs-apart`: that, and a falloff at the crotch: skin near the middle
-  plane follows the hips at and above the cut's top and takes up its leg
-  over 0.3 thigh lengths below it.
+- starts from `own_legs`, not from the file's weights (a cut leaves them
+  interpolated across it): skin whose outline (a horizontal cut through
+  the vertex) lies wholly on one leg's side of the middle plane gives up
+  its weight on the other leg's bones to their counterparts on its own
+  (thigh to thigh, shin to shin, helper to helper);
+- builds one more candidate, `limbs-apart`: that, and a falloff at the
+  crotch: skin near the middle plane follows the hips at and above the
+  cut's top and takes up its leg over 0.3 thigh lengths below it.
 
-A file that was not cut gets neither, and `fix` runs on it as before.
+A file that was not cut gets neither, and `fix` runs on it as before
+(`check` always reports a file as it is).
 `motionforge/tools/tripo_rig.py --unfuse` runs the cut and keeps it only
 when the cut copy ranks better. Bench and numbers: `bench/unfuse.py`,
 `docs/unfuse-log.md`. Probes (`rust/core/examples`): `fused_probe` (what

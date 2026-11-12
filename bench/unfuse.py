@@ -7,12 +7,17 @@ repo).
                           [--suffix .std.glb] [--no-fix] [--fix-args "..."]
                           [--pre "CMD {src} {dst}"]... [--jobs 2] [--only a,b]
     bench/unfuse.py table --out OUT base new [--md table.md] [--pick]
+    bench/unfuse.py rescore --out OUT --tag base --weights BIN
 
 `run` takes every `IN/<id><suffix>`, runs each `--pre` on it in turn (a
 mesh edit or a re-weight that writes `{dst}`), then `weights fix`, then
 the probe (`rust/core/examples/fused_probe.rs`: score, failing findings,
 failing vertices per pose, joins between limbs) and writes
 `OUT/<tag>/<id>.glb`, `<id>.probe.json`, `<id>.fused.png`, `rows.json`.
+Each row also carries two plain shares of the rig's vertices, from
+`weights check --json`: tears (vertices in failing findings) and pokes
+(vertices flagged `intersect`: skin through another part, which the
+score leaves out). `rescore` adds them to a run made before.
 `table` prints the runs per rig and the headline: the set's median score
 and its total failing vertices in the hip-forward poses (crotch) and the
 arm poses (armpit); with --pick also what the rig route would keep, the
@@ -62,9 +67,41 @@ def one(a, rid):
         row.update(json.loads(out.strip().splitlines()[-1]))
     except (ValueError, IndexError):
         row["error"] = (err or out).strip()[-400:]
+    row.update(shares(a.weights, fixed, env))
     with open(os.path.join(d, rid + ".probe.json"), "w") as f:
         json.dump(row, f, indent=1)
     return row
+
+
+def shares(weights, glb, env=None):
+    """Two plain shares from `weights check --json`, in percent of the
+    rig's vertices: tears (vertices in failing findings) and pokes
+    (vertices flagged `intersect`, a warning the score leaves out)."""
+    code, out, err = sh([weights, "check", glb, "--json"], env)
+    try:
+        d = json.loads(out)
+    except ValueError:
+        return {}
+    v = max(d.get("verts", 0), 1)
+    tears = sum(f["verts"] for f in d.get("findings", []) if f.get("severity") == "fail")
+    pokes = sum(r.get("flags", {}).get("intersect", 0) for r in d.get("regions", []))
+    return {"tears": round(100.0 * tears / v, 2), "pokes": round(100.0 * pokes / v, 2)}
+
+
+def rescore(a):
+    """Adds the two shares to a run made before they were measured."""
+    d = os.path.join(a.out, a.tag)
+    with open(os.path.join(d, "rows.json")) as f:
+        rows = json.load(f)
+    env = dict(os.environ, RAYON_NUM_THREADS=str(a.threads))
+    with concurrent.futures.ThreadPoolExecutor(a.jobs) as ex:
+        got = list(ex.map(lambda r: shares(a.weights, os.path.join(d, r["id"] + ".glb"), env), rows))
+    for r, g in zip(rows, got):
+        r.update(g)
+    with open(os.path.join(d, "rows.json"), "w") as f:
+        json.dump(rows, f, indent=1)
+    print(f"{a.tag}: {headline(rows)}")
+    return 0
 
 
 def pose_sum(row, prefix, side=None):
@@ -93,9 +130,15 @@ def headline(rows):
     ok = [r for r in rows if "score" in r]
     if not ok:
         return "no rows"
-    return (f"median {statistics.median(r['score'] for r in ok):.1f}, mean {statistics.mean(r['score'] for r in ok):.1f}, "
+    text = (f"median {statistics.median(r['score'] for r in ok):.1f}, mean {statistics.mean(r['score'] for r in ok):.1f}, "
             f"crotch {sum(pose_sum(r, 'hip_forward') for r in ok)}, armpit {sum(pose_sum(r, 'arm_') for r in ok)}, "
             f"failing findings {sum(r['fails'] for r in ok)}, passing {sum(r['fails'] == 0 for r in ok)}/{len(ok)}")
+    sh_ = [r for r in ok if "tears" in r]
+    if sh_:
+        text += (f"; tears median {statistics.median(r['tears'] for r in sh_):.2f}% (worst {max(r['tears'] for r in sh_):.2f}%, "
+                 f"{sum(r['tears'] <= 0.7 for r in sh_)}/{len(sh_)} at or under 0.7%), "
+                 f"pokes median {statistics.median(r['pokes'] for r in sh_):.1f}% (worst {max(r['pokes'] for r in sh_):.1f}%)")
+    return text
 
 
 def table(a):
@@ -104,14 +147,15 @@ def table(a):
         with open(os.path.join(a.out, tag, "rows.json")) as f:
             runs.append({r["id"]: r for r in json.load(f)})
     ids = sorted(set.intersection(*[set(r) for r in runs]))
-    lines = ["| rig | " + " | ".join(f"{t}: score/fails, crotch L/R, armpit" for t in a.tags) + " |",
+    lines = ["| rig | " + " | ".join(f"{t}: score/fails, crotch L/R, armpit, tears, pokes" for t in a.tags) + " |",
              "|---|" + "---|" * len(a.tags)]
     for i in ids:
         cells = []
         for r in runs:
             x = r[i]
             cells.append(f"{x.get('score', '?')}/{x.get('fails', '?')}, {pose_sum(x, 'hip_forward', 'L')}/"
-                         f"{pose_sum(x, 'hip_forward', 'R')}, {pose_sum(x, 'arm_')}")
+                         f"{pose_sum(x, 'hip_forward', 'R')}, {pose_sum(x, 'arm_')}"
+                         + (f", {x['tears']:.2f}%, {x['pokes']:.1f}%" if "tears" in x else ""))
         lines.append(f"| {i} | " + " | ".join(cells) + " |")
     lines.append("")
     for t, r in zip(a.tags, runs):
@@ -153,8 +197,14 @@ def main():
     t.add_argument("tags", nargs="+")
     t.add_argument("--md", default="")
     t.add_argument("--pick", action="store_true", help="also the per-rig better of the first and last run")
+    c = sub.add_parser("rescore")
+    c.add_argument("--out", required=True)
+    c.add_argument("--tag", required=True)
+    c.add_argument("--weights", required=True)
+    c.add_argument("--jobs", type=int, default=2)
+    c.add_argument("--threads", type=int, default=3)
     a = ap.parse_args()
-    return run(a) if a.cmd == "run" else table(a)
+    return {"run": run, "table": table, "rescore": rescore}[a.cmd](a)
 
 
 if __name__ == "__main__":

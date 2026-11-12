@@ -5,7 +5,7 @@ through a pose: stills, or the frames of a loop.
         [--pose hip_forward.L] [--angle 90] [--frames 1] [--size 720]
         [--view front_left_below] [--label-a BEFORE] [--label-b AFTER]
 
-Poses: hip_forward, hip_out, hip_back, arm_up, arm_forward (.L or .R),
+Poses: hip_forward, hip_out, hip_back, knee, arm_up, arm_forward (.L or .R),
 as weightforge's humanoid set names them; the bone turns about a world
 axis through its head, and a `_twist` helper of the same limb turns half
 as far, as the game does. With --frames N > 1 the angle swings 0 -> max
@@ -26,6 +26,7 @@ POSES = {  # bone word, world axis, sign of the angle for the left side (Blender
     "hip_forward": ("thigh", "X", -1.0, False),
     "hip_back": ("thigh", "X", 1.0, False),
     "hip_out": ("thigh", "Y", -1.0, True),
+    "knee": ("shin", "X", 1.0, False),
     "arm_up": ("upper_arm", "Y", -1.0, True),
     "arm_forward": ("upper_arm", "Z", -1.0, True),
 }
@@ -35,6 +36,8 @@ VIEWS = {
     "front": (0.0, -1.0, 0.0),
     "back_left_below": (0.55, 1.0, -0.45),
     "below": (0.0, -0.35, -1.0),
+    "back_right": (-0.7, 1.0, 0.1),
+    "right": (-1.0, 0.0, 0.0),
 }
 
 
@@ -105,7 +108,8 @@ def main():
                 lo, hi = Vector(map(min, lo, p)), Vector(map(max, hi, p))
     H = hi.z - lo.z
     base = o["pose"].rsplit(".", 1)[0]
-    target = Vector(((lo.x + hi.x) / 2, (lo.y + hi.y) / 2, lo.z + (0.46 if base.startswith("hip") else 0.74) * H))
+    aim = 0.46 if base.startswith("hip") else 0.3 if base == "knee" else 0.74
+    target = Vector(((lo.x + hi.x) / 2, (lo.y + hi.y) / 2, lo.z + aim * H))
     sc.render.engine = "BLENDER_WORKBENCH"
     sc.display.shading.light = "STUDIO"
     sc.display.shading.color_type = "TEXTURE"

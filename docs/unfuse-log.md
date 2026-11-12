@@ -181,9 +181,75 @@ left / right, armpit vertices). `base`: `weights fix` on the rig as made.
   vertices on the three-seed rigs (73.8 and 79.3), 6 and 4 on the
   one-seed ones (65.0 and 77.5).
 
+## Tears and pokes
+
+The 0-100 score is half the single worst region, so one small fault caps
+it. Two plain shares of a rig's vertices, from `weights check --json`
+(`bench/unfuse.py` puts both in every row): **tears**, vertices in
+failing findings; **pokes**, vertices flagged `intersect` (skin through
+another part: a warning the score leaves out). Hand-made game rigs sit
+at 0.3 to 0.7 % tears and 1.3 to 2.5 % pokes; the target here is tears
+at or under 0.7 % without buying it with pokes.
+
+| run | tears median | tears worst | at or under 0.7 % | pokes median | pokes worst |
+|---|---|---|---|---|---|
+| the rigs as made | 0.62 | 5.35 | 11/20 | 11.7 | 21.1 |
+| `base` | 0.27 | 4.92 | 15/20 | 10.9 | 19.9 |
+| `own` | 0.23 | 2.46 | 18/20 | 11.5 | 23.4 |
+| **`final`** | **0.00** | **1.78** | **19/20** | 11.5 | 23.1 |
+| what the route keeps | 0.00 | 1.96 | 19/20 | 11.5 | 21.6 |
+
+| rig | tears %: base -> final | pokes %: base -> final | pokes away from the cut %: base -> final |
+|---|---|---|---|
+| c01 | 0.19 -> 0.00 | 9.2 -> 9.0 | 9.2 -> 9.2 |
+| c02 | 0.66 -> 0.21 | 18.8 -> 18.6 | 18.7 -> 18.7 |
+| c03 | 0.32 -> 0.00 | 9.7 -> 11.3 | 9.7 -> 11.4 |
+| c04 | 0.86 -> 0.10 | 11.9 -> 11.6 | 12.0 -> 12.0 |
+| c05 | 0.00 -> 0.00 | 2.8 -> 2.7 | 2.8 -> 2.8 |
+| c06 | 1.08 -> 0.00 | 12.1 -> 15.4 | 12.1 -> 15.1 |
+| c07 | 0.00 -> 0.00 | 8.1 -> 8.2 | 8.1 -> 8.4 |
+| c08 | 0.11 -> 0.16 | 8.1 -> 8.2 | 8.1 -> 8.3 |
+| c09 | 2.56 -> 0.00 | 13.1 -> 13.5 | 13.1 -> 13.2 |
+| c10 | 0.32 -> 0.21 | 9.8 -> 9.6 | 9.9 -> 9.9 |
+| c11 | 1.96 -> 1.78 | 19.9 -> 23.1 | 19.8 -> 20.9 |
+| c12 | 0.00 -> 0.10 | 10.0 -> 9.7 | 10.1 -> 10.1 |
+| c13 | 0.21 -> 0.00 | 12.4 -> 12.1 | 12.5 -> 12.5 |
+| c14 | 0.64 -> 0.33 | 19.9 -> 21.6 | 19.9 -> 20.6 |
+| c15 | 4.92 -> 0.08 | 18.2 -> 21.3 | 18.0 -> 19.8 |
+| c16 | 0.00 -> 0.00 | 17.4 -> 21.1 | 17.5 -> 20.8 |
+| h01 | 0.36 -> 0.17 | 12.4 -> 12.5 | 12.4 -> 12.7 |
+| h02 | 0.00 -> 0.00 | 3.9 -> 3.9 | 3.9 -> 3.9 |
+| h03 | 0.16 -> 0.00 | 7.2 -> 7.1 | 7.3 -> 7.3 |
+| h04 | 0.00 -> 0.00 | 5.0 -> 5.1 | 5.0 -> 5.2 |
+| **median** | 0.27 -> 0.00 | 10.9 -> 11.5 | 11.0 -> 11.7 |
+
+Tears: the hard four go 2.56, 1.96, 4.92, 0.66 to 0.00, 1.78, 0.08,
+0.21. The one left above 0.7 % is the long coat whose sleeves are joined
+to it (its tears are the sleeves').
+
+Pokes: the cut does trade a little. The set's median goes 10.9 to 11.5,
+and six rigs gain 1.7 to 3.6 points: three robe or skirt figures (+1.7,
++3.3, +3.6), the wide trousers (+3.1) and the two long coats with wide
+sleeves (+3.2, +1.8). `pokes_probe` counts them per pose and away from
+the cut (more than 5 mm from its plane): the rise is not the new inner
+walls, it is the garment. Before the cut a lifted leg could not take
+its half of a robe with it (the other leg held it, and it tore); now
+the half lifts whole and its top folds into the belt and belly at the
+hip, as a bare thigh does at 90 degrees. On the wide trousers the gain
+is in the knee poses (242 flagged vertices to 362): each trouser leg now
+folds at its own knee. The other fourteen rigs move by 0.3 points or
+less. Nothing was seen passing through the body that did not before:
+`bench/pose_paint.py` pictures of the worst gains show the lifted half
+against the waist, and the other half's inner wall where the garment
+used to stretch. Every rig of the set, cut or not, is far above the
+hand-made rigs' 1.3 to 2.5 % pokes; that is the garments and the 140
+degree elbow and knee poses, and this work did not go after it.
+
 ## What is left
 
 - Crotch: 33 failing vertices on 7 rigs, none above 9 on one rig.
+- Pokes: up 1.7 to 3.6 points on six garment rigs (Tears and pokes). A
+  lifted robe half folds into the waist; nothing limits that yet.
 - Armpits and sleeves: not solved (Tried, 4). The set's armpit count is
   174 after the cut against 147 before: one long-coat rig whose sleeves
   are joined to the coat's skirt goes 83 -> 117 once the skirt's halves

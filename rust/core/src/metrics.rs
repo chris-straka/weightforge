@@ -114,6 +114,9 @@ pub struct Ctx {
     /// Median rest distance to the region's bone, per region (its limb
     /// radius; 0 for pieces).
     pub region_radius: Vec<f64>,
+    /// Poses of the set that could not run on this skeleton, one line each
+    /// (`poses::resolve_report`).
+    pub skipped_poses: Vec<String>,
 }
 
 pub struct CtxOpts<'a> {
@@ -143,7 +146,7 @@ fn pretty_role(role: &str) -> String {
 
 impl Ctx {
     pub fn new(model: &Model, o: &CtxOpts) -> Ctx {
-        let (class, poses) = default_poses(model, o.poses, o.clips);
+        let (class, poses, skipped_poses) = default_poses(model, o.poses, o.clips);
         let mats: Vec<Vec<Mat4>> = poses.par_iter().map(|p| joint_matrices(model, p)).collect();
         let geo = geodesics(model, o.voxel_res, &anchor_joints(model));
         let sk = &model.skel;
@@ -228,6 +231,7 @@ impl Ctx {
             piece_transfer,
             feature,
             region_radius,
+            skipped_poses,
         }
     }
 }

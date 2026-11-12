@@ -197,17 +197,45 @@ fn depth(sk: &Skeleton, j: usize) -> usize {
     d
 }
 
+/// Rigify's numbered spine (`spine`, `spine.001` ...), which the standard
+/// humanoid skeleton (motionforge `standardize`) keeps: `spine` is the
+/// hips, `.001`-`.003` the spine, `.004`-`.005` the neck, `.006` the head.
+/// `None` for any other name.
+fn rigify_spine(body: &str) -> Option<&'static str> {
+    let n = body.strip_prefix("spine_")?;
+    if n.len() != 3 || !n.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    Some(match n.parse::<u32>().ok()? {
+        1..=3 => "spine",
+        4 | 5 => "neck",
+        6 => "head",
+        _ => "",
+    })
+}
+
 /// Role -> joints (shallowest first). Multi-bone roles: `spine*` (the
 /// chain above the hips), `fingers.L/R`.
 pub fn resolve_roles(sk: &Skeleton) -> BTreeMap<String, Vec<usize>> {
     let mut roles: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    let posable = |j: usize| crate::helpers::helper_of(sk, j).is_none();
+    // The numbered Rigify spine names its neck and head by position; a
+    // skeleton that also has bones named neck or head goes by those names.
+    let named_neck_head = (0..sk.joints.len()).filter(|&j| posable(j)).any(|j| {
+        let (side, body) = side_of(&strip_prefixes(&sk.names[j]));
+        side == Side::C && matches!(part_of(&body), Some("neck" | "head"))
+    });
     for j in 0..sk.joints.len() {
         // Helpers follow their driver; a pose never moves them directly.
-        if crate::helpers::helper_of(sk, j).is_some() {
+        if !posable(j) {
             continue;
         }
         let (side, body) = side_of(&strip_prefixes(&sk.names[j]));
-        let Some(part) = part_of(&body) else { continue };
+        let part = match rigify_spine(&body) {
+            Some(p) if !named_neck_head && side == Side::C => (!p.is_empty()).then_some(p),
+            _ => part_of(&body),
+        };
+        let Some(part) = part else { continue };
         let key = match side {
             Side::L => format!("{part}.L"),
             Side::R => format!("{part}.R"),
@@ -293,8 +321,15 @@ fn bone_dir(sk: &Skeleton, j: usize) -> Vec3 {
 }
 
 /// Expands a pose set against a skeleton. Moves on missing bones are
-/// skipped; poses left with no moves are dropped.
+/// skipped; poses left with no moves are dropped (see `resolve_report`
+/// for which, and why).
 pub fn resolve(set: &PoseSet, sk: &Skeleton) -> Vec<Pose> {
+    resolve_report(set, sk).0
+}
+
+/// `resolve`, plus one line per dropped pose saying what it could not
+/// find, so a pose that cannot run is never left out without a word.
+pub fn resolve_report(set: &PoseSet, sk: &Skeleton) -> (Vec<Pose>, Vec<String>) {
     let roles = resolve_roles(sk);
     let (up, fwd) = match &set.frame {
         Some(f) => (v3(f.up.0, f.up.1, f.up.2).normalized(), v3(f.forward.0, f.forward.1, f.forward.2).normalized()),
@@ -325,8 +360,10 @@ pub fn resolve(set: &PoseSet, sk: &Skeleton) -> Vec<Pose> {
             specs.push(p.clone());
         }
     }
+    let mut skipped = Vec::new();
     for p in specs {
         let mut moves = Vec::new();
+        let mut missing: Vec<&str> = Vec::new();
         for m in &p.moves {
             let (targets, side) = match roles.get(&m.bone) {
                 Some(js) => {
@@ -342,7 +379,10 @@ pub fn resolve(set: &PoseSet, sk: &Skeleton) -> Vec<Pose> {
                 }
                 None => match sk.joint_by_name(&m.bone) {
                     Some(j) => (vec![j], side_of(&strip_prefixes(&m.bone)).0),
-                    None => continue,
+                    None => {
+                        missing.push(&m.bone);
+                        continue;
+                    }
                 },
             };
             // Multi-bone roles share the angle (a spine bend spreads over
@@ -368,9 +408,13 @@ pub fn resolve(set: &PoseSet, sk: &Skeleton) -> Vec<Pose> {
         }
         if !moves.is_empty() {
             out.push(Pose { name: p.name, moves, locals: Vec::new() });
+        } else if missing.is_empty() {
+            skipped.push(format!("{}: every bone it moves already points that way", p.name));
+        } else {
+            skipped.push(format!("{}: no bone for {}", p.name, missing.join(", ")));
         }
     }
-    out
+    (out, skipped)
 }
 
 /// Generic ROM for skeletons with no known naming: every weighted,
@@ -498,18 +542,19 @@ pub fn clip_poses(model: &Model, per_clip: usize) -> Vec<Pose> {
 }
 
 /// The default pose set for a model: the class preset (or a user file),
-/// plus samples of the asset's own clips.
-pub fn default_poses(model: &Model, user: Option<&PoseSet>, clips: bool) -> (SkelClass, Vec<Pose>) {
+/// plus samples of the asset's own clips. Also the poses of the set that
+/// could not run on this skeleton, one line each.
+pub fn default_poses(model: &Model, user: Option<&PoseSet>, clips: bool) -> (SkelClass, Vec<Pose>, Vec<String>) {
     let class = classify(&model.skel);
-    let mut poses = match (user, class) {
-        (Some(set), _) => resolve(set, &model.skel),
-        (None, SkelClass::Humanoid) => resolve(&parse_pose_set(HUMANOID_RON).expect("built-in humanoid.ron"), &model.skel),
-        (None, SkelClass::Custom) => generic(model),
+    let (mut poses, skipped) = match (user, class) {
+        (Some(set), _) => resolve_report(set, &model.skel),
+        (None, SkelClass::Humanoid) => resolve_report(&parse_pose_set(HUMANOID_RON).expect("built-in humanoid.ron"), &model.skel),
+        (None, SkelClass::Custom) => (generic(model), Vec::new()),
     };
     if clips {
         poses.extend(clip_poses(model, 6));
     }
-    (class, poses)
+    (class, poses, skipped)
 }
 
 #[cfg(test)]
@@ -531,6 +576,8 @@ mod tests {
             ("mixamorig:LeftHandIndex1", "fingers.L"),
             ("DEF-spine.003", "spine"),
             ("Head", "head"),
+            ("mixamorig:Neck", "neck"),
+            ("mixamorig:Spine2", "spine"),
         ];
         for (n, want) in cases {
             let (side, body) = side_of(&strip_prefixes(n));
@@ -543,6 +590,24 @@ mod tests {
             assert_eq!(got, want, "{n}");
         }
     }
+    #[test]
+    fn rigify_numbered_spine() {
+        for (n, want) in [
+            ("spine_001", Some("spine")),
+            ("spine_003", Some("spine")),
+            ("spine_004", Some("neck")),
+            ("spine_005", Some("neck")),
+            ("spine_006", Some("head")),
+            ("spine_007", Some("")),
+            ("spine", None),
+            ("spine2", None),
+            ("spine_02", None),
+        ] {
+            assert_eq!(rigify_spine(n), want, "{n}");
+        }
+        assert_eq!(side_of(&strip_prefixes("DEF-spine.004")).1, "spine_004");
+    }
+
     #[test]
     fn humanoid_ron_parses() {
         let s = parse_pose_set(HUMANOID_RON).unwrap();

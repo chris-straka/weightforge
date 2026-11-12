@@ -51,6 +51,9 @@ pub struct Report {
     pub findings: Vec<Finding>,
     pub regions: Vec<RegionReport>,
     pub worst_poses: Vec<PoseReport>,
+    /// Poses of the set that could not run on this skeleton (what each one
+    /// could not find): those parts of the body went untested.
+    pub skipped_poses: Vec<String>,
     pub thresholds: Thresholds,
 }
 
@@ -237,6 +240,7 @@ pub fn build(file: &str, model: &Model, ctx: &Ctx, ev: &Eval) -> Report {
         findings,
         regions,
         worst_poses,
+        skipped_poses: ctx.skipped_poses.clone(),
         thresholds: th.clone(),
     }
 }
@@ -245,6 +249,9 @@ pub fn text(r: &Report) -> String {
     let mut s = String::new();
     let verdict = if r.pass { "PASS" } else { "FAIL" };
     s += &format!("{verdict} {} score {:.1}/100 ({}, {} verts, {} bones, {} poses)\n", r.file, r.score, r.class, r.verts, r.bones, r.poses);
+    for p in &r.skipped_poses {
+        s += &format!("pose not tested: {p}\n");
+    }
     for f in &r.findings {
         s += &format!("{} {} [{}]: {} ({} verts)\n", f.code, f.region, f.severity, f.detail, f.verts);
     }

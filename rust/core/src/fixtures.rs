@@ -374,6 +374,17 @@ pub fn build_at(fault: &str, density: f64) -> Fixture {
                 }
             }
         }
+        "neck_tear" => {
+            // A hard cut across the neck: the lower neck stays with the
+            // chest, the rest follows the head, so a head turn tears it
+            // open (not in FAULTS; the neck/head test builds it).
+            let (chest, head) = (j("DEF-spine.003") as u32, j("DEF-head") as u32);
+            for (v, t) in body_tags.iter().enumerate() {
+                if t.chain == 1 {
+                    body_w[v] = vec![(if t.s < 0.06 { chest } else { head }, 1.0)];
+                }
+            }
+        }
         "cape_wrong_bone" => {
             let b = j("DEF-upper_arm.R") as u32;
             for vw in cape_w.iter_mut() {
@@ -445,7 +456,9 @@ pub fn to_glb(f: &Fixture) -> Glb {
     let ibm_acc = glb.push_accessor(json!({"bufferView": bv, "componentType": 5126, "count": nb, "type": "MAT4"}));
 
     let mut meshes = Vec::new();
-    for (name, pos, tris, w) in [("Body", &f.body_pos, &f.body_tris, &f.body_w), ("Cape", &f.cape_pos, &f.cape_tris, &f.cape_w)] {
+    // A fixture without a cape (a test shape) writes the body alone.
+    let shells = [("Body", &f.body_pos, &f.body_tris, &f.body_w), ("Cape", &f.cape_pos, &f.cape_tris, &f.cape_w)];
+    for (name, pos, tris, w) in shells.into_iter().filter(|s| !s.1.is_empty()) {
         let p32: Vec<f32> = pos.iter().flat_map(|p| p.to_f32()).collect();
         let n32: Vec<f32> = normals(pos, tris).iter().flat_map(|p| p.to_f32()).collect();
         let mut lo = [f32::MAX; 3];
@@ -483,14 +496,18 @@ pub fn to_glb(f: &Fixture) -> Glb {
         meshes.push(json!({"name": name, "primitives": [{"attributes": {"POSITION": ap, "NORMAL": an, "JOINTS_0": aj, "WEIGHTS_0": aw}, "indices": ai}]}));
     }
     let body_node = nodes.len();
-    nodes.push(json!({"name": "Body", "mesh": 0, "skin": 0}));
-    nodes.push(json!({"name": "Cape", "mesh": 1, "skin": 0}));
+    let names = ["Body", "Cape"];
+    for (mi, name) in names.iter().take(meshes.len()).enumerate() {
+        nodes.push(json!({"name": name, "mesh": mi, "skin": 0}));
+    }
     let arm = nodes.len();
     nodes.push(json!({"name": "Armature", "children": [0]}));
     glb.json["nodes"] = json!(nodes);
+    let nm = meshes.len();
     glb.json["meshes"] = json!(meshes);
     glb.json["skins"] = json!([{"name": "Armature", "inverseBindMatrices": ibm_acc, "joints": (0..nb).collect::<Vec<_>>(), "skeleton": 0}]);
-    glb.json["scenes"] = json!([{"nodes": [arm, body_node, body_node + 1]}]);
+    let roots: Vec<usize> = std::iter::once(arm).chain(body_node..body_node + nm).collect();
+    glb.json["scenes"] = json!([{"nodes": roots}]);
     glb.json["scene"] = json!(0);
     glb.sync_buffer_len();
     glb

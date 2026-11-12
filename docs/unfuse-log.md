@@ -190,9 +190,9 @@ left / right, armpit vertices). `base`: `weights fix` on the rig as made.
   follow the legs. The route keeps that rig uncut (it ranks by failing
   findings first).
 - Five rigs rank no better cut than uncut and the route keeps them as
-  they were: the sleeve rig above, two that were already passing, one
-  with a new one-vertex-group finding at the cut's top, and the other
-  seed of the long open coat.
+  they were: the sleeve rig above, two that were already passing and
+  score a little lower cut, one passing rig that gains a finding (four
+  crotch vertices), and the other seed of the long open coat.
 - The walls are flat and take single texels from their rim. On the set
   they read as the garment's dark inside; a wall has no paint of its own
   and no vertices but its rim, so a long one moves as a few large

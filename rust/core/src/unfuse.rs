@@ -420,8 +420,10 @@ pub fn cut_crotch(model: &Model) -> Option<f64> {
 /// thighs, and `own_legs` is what they should have been. `None` on a body
 /// that was not cut, or when nothing changes.
 pub fn cut_start(model: &Model) -> Option<Weights> {
-    cut_crotch(model)?;
-    let w = own_legs(model, &model.weights);
+    let mut w = if cut_crotch(model).is_some() { own_legs(model, &model.weights) } else { model.weights.clone() };
+    for cut in arm_cuts(model) {
+        w = arm_cut_weights(model, &cut, &w);
+    }
     (w != model.weights).then_some(w)
 }
 
@@ -483,29 +485,18 @@ pub fn crotch_band_with(model: &Model, w: &Weights, band_down: f64, band_out: f6
         .collect()
 }
 
-/// A cut between an arm and the body, as meshkit's `unfuse.py` records it
-/// in the mesh's `extras.unfuse` (`arm.l`, `arm.r`: the plane, and how far
-/// along the upper arm's direction from the shoulder joint it runs).
+/// An arm that `unfuse.py` cut free of the body where a sleeve was joined
+/// to it, as recorded in the mesh's `extras.unfuse` (`arm.l`, `arm.r`: the
+/// facing of the cuts, from the body toward the arm).
 pub struct ArmCut {
     /// Per joint: in this arm's chain (helpers count with their driver).
     pub chain: Vec<bool>,
-    /// The arm's own bones, shoulder end first (upper arm, forearm, hand).
-    pub bones: Vec<usize>,
-    /// The upper arm's parent joint.
-    pub parent: Option<usize>,
-    pub shoulder: Vec3,
-    /// Unit vector along the upper arm.
-    pub dir: Vec3,
-    /// The plane: a point on it, and its unit normal toward the arm.
-    pub point: Vec3,
+    /// Unit vector across the cuts, from the body's side to the arm's.
     pub normal: Vec3,
-    /// Where the cut starts and ends, measured along `dir` from the shoulder.
-    pub from: f64,
-    pub to: f64,
+    /// Length of the upper arm bone.
     pub len: f64,
-    /// The cut starts at the armpit and stays attached there (the arm was
-    /// joined right from it): only then does its top get a falloff.
-    pub hinge: bool,
+    /// +1 for the left arm, -1 for the right.
+    pub lateral_sign: f64,
 }
 
 pub fn arm_cuts(model: &Model) -> Vec<ArmCut> {
@@ -518,10 +509,9 @@ pub fn arm_cuts(model: &Model) -> Vec<ArmCut> {
     let mut out = Vec::new();
     for mesh in model.glb.arr("meshes") {
         let Some(rec) = mesh.get("extras").and_then(|e| e.get("unfuse")) else { continue };
-        for (key, role) in [("arm.l", "upper_arm.L"), ("arm.r", "upper_arm.R")] {
+        for (key, role, sign) in [("arm.l", "upper_arm.L", 1.0), ("arm.r", "upper_arm.R", -1.0)] {
             let (Some(r), Some(&root)) = (rec.get(key), roles.get(role).and_then(|v| v.first())) else { continue };
-            let (Some(point), Some(normal)) = (vec(r.get("point")), vec(r.get("normal"))) else { continue };
-            let (Some(from), Some(to)) = (r.get("from").and_then(|x| x.as_f64()), r.get("to").and_then(|x| x.as_f64())) else { continue };
+            let Some(normal) = vec(r.get("normal")) else { continue };
             let chain: Vec<bool> = (0..model.njoints())
                 .map(|j| {
                     let mut k = Some(crate::helpers::owner(sk, j));
@@ -534,103 +524,90 @@ pub fn arm_cuts(model: &Model) -> Vec<ArmCut> {
                     false
                 })
                 .collect();
-            let mut bones = vec![root];
-            while let Some(&next) = sk.jchildren[*bones.last().unwrap()].iter().find(|&&c| crate::helpers::helper_of(sk, c).is_none()) {
-                bones.push(next);
-                if bones.len() == 3 {
-                    break;
-                }
-            }
-            out.push(ArmCut {
-                chain,
-                bones,
-                parent: sk.jparent[root],
-                shoulder: sk.head[root],
-                dir: (sk.tail[root] - sk.head[root]).normalized(),
-                point,
-                normal: normal.normalized(),
-                from,
-                to,
-                len: sk.bone_len(root),
-                hinge: r.get("hinge").and_then(|x| x.as_bool()).unwrap_or(false),
-            });
+            out.push(ArmCut { chain, normal: normal.normalized(), len: sk.bone_len(root), lateral_sign: sign });
         }
     }
     out
 }
 
-/// Which side of an arm cut the outline through each vertex (across the
-/// arm's direction) lies on: 1 the arm's, 2 the body's, 0 when it reaches
-/// across or the vertex is not alongside the cut.
-pub fn arm_side(model: &Model, cut: &ArmCut) -> Vec<u8> {
-    let fwd = cut.dir.cross(cut.normal).normalized();
-    let mut sl = Slicer::along(model, cut.dir, cut.normal, fwd);
+/// The two sides of every cut: pairs of vertices a hair apart (the two
+/// rims `unfuse.py` leaves facing each other; nothing else in a welded
+/// mesh sits that close), as (vertex, vertex).
+pub fn cut_pairs(model: &Model) -> Vec<(usize, usize)> {
     let (lo, hi) = model.rest.iter().fold((f64::MAX, f64::MIN), |a, p| (a.0.min(p.y), a.1.max(p.y)));
-    let slack = SIDE_SLACK * (hi - lo);
-    let plane = cut.point.dot(cut.normal);
-    let along = |v: usize| (model.rest[v] - cut.shoulder).dot(cut.dir);
-    let mut side: Vec<u8> = (0..model.nverts())
-        .map(|v| {
-            let u = along(v);
-            if u < cut.from || u > cut.to {
-                return 0;
-            }
-            let Some((pts, _, _)) = sl.through(v) else { return 0 };
-            let (mut min, mut max) = (f64::MAX, f64::MIN);
-            for p in &pts {
-                min = min.min(p.0 - plane);
-                max = max.max(p.0 - plane);
-            }
-            if min > -slack && max > slack {
-                1
-            } else if max < slack && min < -slack {
-                2
-            } else {
-                0
-            }
-        })
-        .collect();
-    for _ in 0..4 {
-        let prev = side.clone();
-        for v in 0..model.nverts() {
-            let u = along(v);
-            if prev[v] != 0 || u < cut.from || u > cut.to || (model.rest[v].dot(cut.normal) - plane).abs() > slack {
-                continue;
-            }
-            let (mut a, mut b) = (false, false);
-            for &n in &model.adj[v] {
-                a |= prev[n as usize] == 1;
-                b |= prev[n as usize] == 2;
-            }
-            if a != b {
-                side[v] = if a { 1 } else { 2 };
+    let reach = 1e-4 * (hi - lo);
+    let cell = |p: Vec3| ((p.x / reach).floor() as i64, (p.y / reach).floor() as i64, (p.z / reach).floor() as i64);
+    let mut grid: HashMap<(i64, i64, i64), Vec<u32>> = HashMap::new();
+    for (v, p) in model.rest.iter().enumerate() {
+        grid.entry(cell(*p)).or_default().push(v as u32);
+    }
+    let mut out = Vec::new();
+    for (v, p) in model.rest.iter().enumerate() {
+        let c = cell(*p);
+        for dx in -1..=1 {
+            for dy in -1..=1 {
+                for dz in -1..=1 {
+                    for &u in grid.get(&(c.0 + dx, c.1 + dy, c.2 + dz)).into_iter().flatten() {
+                        let u = u as usize;
+                        if u > v && (model.rest[u] - *p).len() < reach && !model.adj[v].contains(&(u as u32)) {
+                            out.push((v, u));
+                        }
+                    }
+                }
             }
         }
     }
-    side
+    out
 }
 
-/// How far along the arm past the armpit its inner side takes to become
-/// all arm, and how far out from the cut's plane skin beside the armpit
-/// does, both in upper-arm lengths.
-pub const ARM_BAND_DOWN: f64 = 0.4;
-pub const ARM_BAND_OUT: f64 = 0.35;
+/// How far from a sleeve's cut the weights are put right, in upper-arm
+/// lengths along the skin.
+pub const ARM_REACH: f64 = 0.6;
 
-/// Weights for an arm that `unfuse.py` cut free of the body: skin on the
-/// arm's side of the cut follows the arm's bones only, skin on the body's
-/// side none of them; then, like `crotch_band`, the arm's skin near the
-/// plane takes up the arm over `ARM_BAND_DOWN` past the armpit (or
-/// `ARM_BAND_OUT` out from the plane), and what is capped goes back to
-/// the bone the vertex leaned on before (else the arm's parent).
-pub fn arm_band(model: &Model, cut: &ArmCut, w: &Weights) -> Weights {
-    let side = arm_side(model, cut);
+/// Weights round a cut that freed a sleeve from the body. A cuff pressed
+/// into a coat was rigged as one skin: forearm weight runs onto the coat
+/// and hips and thigh weight onto the sleeve. From the cut's two rims
+/// outward along the skin, each side gives up the other's bones: the
+/// sleeve keeps only its arm's, the coat none of them, in full at the cut
+/// and fading out over `ARM_REACH`, and not at all near an end of a cut
+/// that stops inside joined skin. A side with next to nothing of its own
+/// takes the nearest bone of its own kind.
+pub fn arm_cut_weights(model: &Model, cut: &ArmCut, w: &Weights) -> Weights {
     let sk = &model.skel;
-    let plane = cut.point.dot(cut.normal);
-    let (down, out) = (ARM_BAND_DOWN * cut.len, ARM_BAND_OUT * cut.len);
-    let smooth = |x: f64| {
-        let t = x.clamp(0.0, 1.0);
-        t * t * (3.0 - 2.0 * t)
-    };
+    let legs = Legs::of(model);
+    let nv = model.nverts();
+    // Rims of this arm's cuts: pairs set apart along its facing, on its
+    // side of the body, away from the legs' middle plane.
+    let mut seeds = [vec![false; nv], vec![false; nv]]; // arm's side, body's side
+    for (a, b) in cut_pairs(model) {
+        let d = model.rest[a] - model.rest[b];
+        let facing = d.normalized().dot(cut.normal);
+        let side_x = legs.as_ref().map(|l| (model.rest[a] - l.center).dot(l.lateral)).unwrap_or(model.rest[a].x);
+        if facing.abs() < 0.5 || side_x * cut.lateral_sign < 0.02 * model.scale {
+            continue;
+        }
+        let (arm, body) = if facing > 0.0 { (a, b) } else { (b, a) };
+        seeds[0][arm] = true;
+        seeds[1][body] = true;
+    }
+    if !seeds[0].iter().any(|&s| s) {
+        return w.clone();
+    }
+    let reach = ARM_REACH * cut.len;
+    let dist = [crate::fix::distances(model, &seeds[0], reach), crate::fix::distances(model, &seeds[1], reach)];
+    // Where a cut ends inside joined skin (a vertex that still joins a rim
+    // of each side), the two sides are one skin again: near such an end
+    // the weights are left as they were, so nothing switches hard across
+    // skin that was not cut.
+    let ends: Vec<bool> = (0..nv)
+        .map(|v| {
+            !seeds[0][v]
+                && !seeds[1][v]
+                && model.adj[v].iter().any(|&u| seeds[0][u as usize])
+                && model.adj[v].iter().any(|&u| seeds[1][u as usize])
+        })
+        .collect();
+    let to_end = crate::fix::distances(model, &ends, reach);
     let deform: Vec<bool> = {
         let mut used = vec![false; model.njoints()];
         for vw in w {
@@ -646,58 +623,45 @@ pub fn arm_band(model: &Model, cut: &ArmCut, w: &Weights) -> Weights {
             .min_by(|&a, &b| sk.seg_dist(a, model.rest[v]).total_cmp(&sk.seg_dist(b, model.rest[v])).then(a.cmp(&b)))
             .map(|j| j as u32)
     };
-    (0..model.nverts())
+    let smooth = |x: f64| {
+        let t = x.clamp(0.0, 1.0);
+        t * t * (3.0 - 2.0 * t)
+    };
+    (0..nv)
         .map(|v| {
-            let is_arm = |j: u32| cut.chain[j as usize];
-            let arm_total: f64 = w[v].iter().filter(|e| is_arm(e.0)).map(|e| e.1).sum();
-            let rest_total: f64 = w[v].iter().filter(|e| !is_arm(e.0)).map(|e| e.1).sum();
-            // Where the capped share goes: the body bone it leaned on most.
-            let anchor =
-                w[v].iter().filter(|e| !is_arm(e.0)).max_by(|a, b| a.1.total_cmp(&b.1)).map(|e| e.0).or(cut.parent.map(|p| p as u32));
-            // Own side first.
-            let mut vw: VW = match side[v] {
-                1 if rest_total > 0.0 => {
-                    if arm_total > 0.0 {
-                        w[v].iter().filter(|e| is_arm(e.0)).map(|&(j, x)| (j, x / arm_total)).collect()
-                    } else {
-                        nearest(v, true).map(|j| vec![(j, 1.0)]).unwrap_or_else(|| w[v].clone())
-                    }
-                }
-                2 if arm_total > 0.0 => {
-                    if rest_total > 0.0 {
-                        w[v].iter().filter(|e| !is_arm(e.0)).map(|&(j, x)| (j, x / rest_total)).collect()
-                    } else {
-                        nearest(v, false).map(|j| vec![(j, 1.0)]).unwrap_or_else(|| w[v].clone())
-                    }
-                }
-                _ => w[v].clone(),
-            };
-            // Then the armpit's falloff, on the arm's side and at the cut's top.
-            let u = (model.rest[v] - cut.shoulder).dot(cut.dir);
-            let d = model.rest[v].dot(cut.normal) - plane;
-            if cut.hinge && side[v] != 2 && u > cut.from - down && u < cut.from + down && d > -out {
-                let arm_now: f64 = vw.iter().filter(|e| is_arm(e.0)).map(|e| e.1).sum();
-                let limit = smooth((u - cut.from) / down).max(smooth(d / out));
-                if let (true, Some(anchor)) = (arm_now > limit, anchor) {
-                    let k = limit / arm_now;
-                    let mut freed = 0.0;
-                    for e in vw.iter_mut().filter(|e| is_arm(e.0)) {
-                        freed += e.1 * (1.0 - k);
-                        e.1 *= k;
-                    }
-                    match vw.iter_mut().find(|e| e.0 == anchor) {
-                        Some(e) => e.1 += freed,
-                        None => vw.push((anchor, freed)),
-                    }
-                }
+            let (da, db) = (dist[0][v], dist[1][v]);
+            if !da.is_finite() && !db.is_finite() {
+                return w[v].clone();
             }
-            if vw == w[v] { vw } else { prune_vw(&normalize_vw(vw), 4, 0.01) }
+            let on_arm = da <= db;
+            // How much of the other side's weight goes: all at the cut, none at the reach.
+            let k = smooth(1.0 - da.min(db) / reach) * if to_end[v].is_finite() { smooth(to_end[v] / reach) } else { 1.0 };
+            let mine = |j: u32| cut.chain[j as usize] == on_arm;
+            let keep: f64 = w[v].iter().filter(|e| mine(e.0)).map(|e| e.1).sum();
+            let lose: f64 = w[v].iter().filter(|e| !mine(e.0)).map(|e| e.1).sum();
+            if lose <= 0.0 || k <= 0.0 {
+                return w[v].clone();
+            }
+            let moved = lose * k;
+            let mut out: VW = w[v].iter().map(|&(j, x)| if mine(j) { (j, x) } else { (j, x * (1.0 - k)) }).collect();
+            // (A sliver of its own kind is no guide: scaled up it puts a
+            // coat's flank on the collar bone.)
+            if keep >= 0.15 {
+                for e in out.iter_mut().filter(|e| mine(e.0)) {
+                    e.1 += moved * e.1 / keep;
+                }
+            } else if let Some(j) = nearest(v, on_arm) {
+                out.push((j, moved));
+            } else {
+                return w[v].clone();
+            }
+            prune_vw(&normalize_vw(out), 4, 0.01)
         })
         .collect()
 }
 
 /// Every limb `unfuse.py` cut apart: `crotch_band` for the legs,
-/// `arm_band` for each arm. A body it did not cut comes back unchanged.
+/// `arm_cut_weights` for each arm. A body it did not cut comes back unchanged.
 pub fn limbs_apart(model: &Model, w: &Weights) -> Weights {
     limbs_apart_with(model, w, BAND_DOWN, BAND_OUT)
 }
@@ -705,7 +669,7 @@ pub fn limbs_apart(model: &Model, w: &Weights) -> Weights {
 pub fn limbs_apart_with(model: &Model, w: &Weights, band_down: f64, band_out: f64) -> Weights {
     let mut w = crotch_band_with(model, w, band_down, band_out);
     for cut in arm_cuts(model) {
-        w = arm_band(model, &cut, &w);
+        w = arm_cut_weights(model, &cut, &w);
     }
     w
 }

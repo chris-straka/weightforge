@@ -6,7 +6,7 @@ repo).
     bench/unfuse.py run   --in IN --out OUT --tag base --weights BIN --probe BIN
                           [--suffix .std.glb] [--no-fix] [--fix-args "..."]
                           [--pre "CMD {src} {dst}"]... [--jobs 2] [--only a,b]
-    bench/unfuse.py table --out OUT base new [--md table.md] [--pick]
+    bench/unfuse.py table --out OUT base new [--md table.md] [--pick [--rest DIR]]
     bench/unfuse.py rescore --out OUT --tag base --weights BIN
 
 `run` takes every `IN/<id><suffix>`, runs each `--pre` on it in turn (a
@@ -163,11 +163,33 @@ def table(a):
     if a.pick and len(runs) >= 2:
         # What the rig route keeps: per rig, the better of the first and
         # the last run, as it ranks tries (fewer failing findings, then
-        # score; the first run on a tie).
+        # score; the first run on a tie), and which of those rules chose.
         key = lambda x: (x.get("fails", 99), -x.get("score", 0.0))
         picked = [min((runs[0][i], runs[-1][i]), key=key) for i in ids]
         took = sum(p is runs[-1][i] for p, i in zip(picked, ids))
         lines.append(f"pick of {a.tags[0]} and {a.tags[-1]} ({took}/{len(ids)} take {a.tags[-1]}): {headline(picked)}")
+        lines += ["", f"| rig | kept | by | tears: {a.tags[0]} -> {a.tags[-1]} | pokes: {a.tags[0]} -> {a.tags[-1]} |"
+                  + (" rest pose, whole figure: outline px, colour px | close-ups: outline px, colour px |" if a.rest else ""),
+                  "|---|---|---|---|---|" + ("---|---|" if a.rest else "")]
+        for i, p in zip(ids, picked):
+            b, f = runs[0][i], runs[-1][i]
+            rule = ("fewer failing findings" if b.get("fails") != f.get("fails")
+                    else "higher score" if b.get("score") != f.get("score") else "a tie: the first")
+            row = (f"| {i} | {a.tags[-1] if p is f else a.tags[0]} | {rule} ({b.get('fails')} vs {f.get('fails')}, "
+                   f"{b.get('score')} vs {f.get('score')}) | {b.get('tears', '?')} -> {f.get('tears', '?')} | "
+                   f"{b.get('pokes', '?')} -> {f.get('pokes', '?')} |")
+            if a.rest:
+                try:
+                    with open(os.path.join(a.rest, i, "diff.json")) as fh:
+                        d = json.load(fh)
+                    whole = [v for k, v in d.items() if not k.startswith("hips")]
+                    close = [v for k, v in d.items() if k.startswith("hips")]
+                    worst = lambda vs, k: max(v[k] for v in vs)
+                    row += (f" {worst(whole, 'outline_changed_px')}, {worst(whole, 'colour_changed_px')} |"
+                            f" {worst(close, 'outline_changed_px')}, {worst(close, 'colour_changed_px')} |")
+                except (OSError, ValueError):
+                    row += " ? | ? |"
+            lines.append(row)
     text = "\n".join(lines) + "\n"
     if a.md:
         with open(a.md, "w") as f:
@@ -197,6 +219,7 @@ def main():
     t.add_argument("tags", nargs="+")
     t.add_argument("--md", default="")
     t.add_argument("--pick", action="store_true", help="also the per-rig better of the first and last run")
+    t.add_argument("--rest", default="", help="with --pick: a folder of rest_diff.py results (<id>/diff.json) for the last run")
     c = sub.add_parser("rescore")
     c.add_argument("--out", required=True)
     c.add_argument("--tag", required=True)

@@ -100,19 +100,43 @@ stretches into a web when the arm lifts. Most rigs' arms are free.
      their neighbours for wall corners), not by which leg axis the
      outline goes round: a tunic's hem is an open wrap that goes round
      neither.
-4. **Sleeves** (`unfuse.py --parts legs,arms`, off; not solved). Three
-   tries. (a) The plane beside the arm with the smallest section: it
-   cut arms that were free (a rig with no armpit fault went 46.7 ->
-   18.1). (b) Outlines across the arm, a join where the outline runs on
-   round the trunk with a waist: this finds the joins and leaves free
-   arms alone (4 of 6 rigs tried: not cut, unchanged). (c) The cut only
-   where joined, on a plane through the waists. Where (b) and (c) cut,
-   the rigs score far worse after the weights step (40.8 -> 19.0, 56.1
-   -> 13.6, 55.9 -> 15.9): skin just across the cut ends up on the
-   shoulder while its neighbour is on the forearm. The side test that
-   works for legs (outlines across the limb, wholly on one side of the
-   plane) mislabels sleeve skin; a wide sleeve's outline across the arm
-   is not a clean loop. Left in the tool, off by default.
+4. **Sleeves** (`unfuse.py --parts legs,arms`, off; not solved). What
+   is joined, read from outlines across the arm every 0.04 upper-arm
+   lengths (`UNFUSE_DEBUG=1` prints them): not the armpit. On the three
+   long-coat rigs the forearm and cuff of a wide sleeve are pressed into
+   the coat at belt height, in one or two patches 1.5 to 4 cm long and 2
+   to 7 cm thick front to back, 3 to 5 cm from the arm's axis; elsewhere
+   the arm is free. Round each patch the skin carries forearm, hips and
+   thigh weight together (stretched edges 4 to 6 times in `arm_up`),
+   which is the sheet from the raised arm to the belt. Three more rigs
+   have a touch one or two slices long (not cut), the rest none. Five
+   tries:
+   (a) The plane beside the arm with the smallest section: it cut arms
+   that were free (a rig with no armpit fault went 46.7 -> 18.1).
+   (b) Outlines across the arm, a join where the outline runs on round
+   the trunk with a waist: finds the joins, leaves free arms alone.
+   (c) One plane through all of an arm's waists, cut from the first to
+   the last: it sliced the free sleeve between two joins, and the
+   weights step (sides told by outlines across the arm) put sleeve skin
+   on the collar bone (40.8 -> 19.0, 56.1 -> 13.6, 55.9 -> 15.9).
+   (d) Each join on its own plane, only where the plane's curve closes
+   round the join: it never does. The plane through a join's waists
+   runs on into the coat's flank (curves 3 to 5 upper-arm lengths long):
+   these sleeves lie along a body far wider than they are, so no plane
+   comes clear.
+   (e) Each join on its own plane along its own length, and weights put
+   right outward from the cut's two rims along the skin (0.6 upper-arm
+   lengths, nothing near an end that is still joined): tears on the
+   three rigs, legs only -> legs and sleeves, before the fixer 2.46 ->
+   2.91 %, 0.24 -> 0.54 %, 0.55 -> 0.67 %; after it 1.78 -> 2.60 % and
+   0.17 -> 0.37 % on the two tried. Pokes do not move (23.4 -> 23.1,
+   12.5 -> 12.4). Still not a win: the cuff sinks into the coat with no
+   waist beyond the patch, so every cut ends inside skin that is still
+   joined, and a cut that ends there adds a tear at its end. What would
+   work is a cut that follows the sleeve's own edge round the cuff (the
+   crease where sleeve meets coat, not a plane), or the paint's edge
+   where there is no crease. Left in the tool, off by default; a file
+   without an arm record is not touched by the arm weights.
 
 Not tried: a through-the-volume distance prior as a fixer candidate
 (route 2) and transfer from a clean base body (route 4). After the cut
@@ -245,24 +269,67 @@ used to stretch. Every rig of the set, cut or not, is far above the
 hand-made rigs' 1.3 to 2.5 % pokes; that is the garments and the 140
 degree elbow and knee poses, and this work did not go after it.
 
+## Rest pose, and which rule kept each rig
+
+`bench/unfuse.py table --pick --rest`: what the route keeps per rig (it
+ranks by failing findings, then score; the uncut rig on a tie) with the
+tears and pokes on both sides, and the rest-pose difference between the
+uncut and the cut model (`bench/rest_diff.py`, 512 px, pixels that
+differ in the worst view: four views of the whole figure, four of the
+hips at four times the scale).
+
+| rig | kept | by | tears: base -> final | pokes: base -> final | rest pose, whole figure: outline px, colour px | close-ups: outline px, colour px |
+|---|---|---|---|---|---|---|
+| c01 | final | fewer failing findings (2 vs 0, 63.9 vs 65.0) | 0.19 -> 0.0 | 9.18 -> 8.96 | 0, 1 | 0, 9 |
+| c02 | final | fewer failing findings (3 vs 2, 53.7 vs 64.8) | 0.66 -> 0.21 | 18.77 -> 18.65 | 0, 1 | 0, 15 |
+| c03 | final | fewer failing findings (1 vs 0, 54.0 vs 65.7) | 0.32 -> 0.0 | 9.67 -> 11.32 | 0, 0 | 1, 17 |
+| c04 | final | fewer failing findings (4 vs 1, 50.3 vs 69.1) | 0.86 -> 0.1 | 11.87 -> 11.61 | 0, 0 | 0, 5 |
+| c05 | final | higher score (0 vs 0, 78.4 vs 79.1) | 0.0 -> 0.0 | 2.77 -> 2.71 | 0, 0 | 1, 12 |
+| c06 | final | fewer failing findings (3 vs 0, 49.1 vs 65.5) | 1.08 -> 0.0 | 12.1 -> 15.44 | 0, 0 | 1, 32 |
+| c07 | final | higher score (0 vs 0, 66.4 vs 67.4) | 0.0 -> 0.0 | 8.07 -> 8.22 | 0, 0 | 1, 11 |
+| c08 | final | higher score (1 vs 1, 62.4 vs 65.0) | 0.11 -> 0.16 | 8.06 -> 8.18 | 0, 0 | 5, 0 |
+| c09 | final | fewer failing findings (3 vs 0, 36.3 vs 58.1) | 2.56 -> 0.0 | 13.12 -> 13.49 | 0, 1 | 0, 15 |
+| c10 | final | fewer failing findings (3 vs 2, 64.8 vs 65.0) | 0.32 -> 0.21 | 9.85 -> 9.6 | 0, 0 | 0, 0 |
+| c11 | base | fewer failing findings (3 vs 4, 33.4 vs 42.7) | 1.96 -> 1.78 | 19.86 -> 23.06 | 0, 0 | 0, 4 |
+| c12 | base | fewer failing findings (0 vs 1, 61.6 vs 77.5) | 0.0 -> 0.1 | 10.02 -> 9.74 | 0, 0 | 1, 3 |
+| c13 | final | fewer failing findings (1 vs 0, 57.2 vs 63.1) | 0.21 -> 0.0 | 12.45 -> 12.14 | 0, 1 | 0, 25 |
+| c14 | final | fewer failing findings (3 vs 1, 49.0 vs 55.8) | 0.64 -> 0.33 | 19.89 -> 21.64 | 0, 1 | 0, 17 |
+| c15 | final | fewer failing findings (7 vs 1, 20.2 vs 51.1) | 4.92 -> 0.08 | 18.21 -> 21.31 | 0, 2 | 0, 15 |
+| c16 | base | higher score (0 vs 0, 65.5 vs 59.5) | 0.0 -> 0.0 | 17.45 -> 21.06 | 0, 1 | 0, 15 |
+| h01 | base | fewer failing findings (2 vs 3, 55.3 vs 56.8) | 0.36 -> 0.17 | 12.37 -> 12.46 | 0, 1 | 0, 20 |
+| h02 | base | higher score (0 vs 0, 74.0 vs 73.8) | 0.0 -> 0.0 | 3.89 -> 3.86 | 0, 0 | 1, 1 |
+| h03 | final | fewer failing findings (1 vs 0, 59.7 vs 79.3) | 0.16 -> 0.0 | 7.22 -> 7.08 | 0, 1 | 0, 2 |
+| h04 | final | higher score (0 vs 0, 69.5 vs 70.2) | 0.0 -> 0.0 | 4.95 -> 5.07 | 0, 0 | 0, 12 |
+
+The whole figure's outline is the same pixel for pixel on all 20. In the
+four-times close-ups it is the same on 13 rigs and differs by 1 pixel on
+six and 5 on one (the two rims stand 0.02 mm apart); up to 32 pixels
+change colour along the cut. The route's rule does not look at pokes.
+On the six rigs where pokes rise by more than a point it keeps the cut
+on four (c03, c06, c14, c15: tears down 0.32, 1.08, 0.31 and 4.84
+points for pokes up 1.7, 3.3, 1.8 and 3.1) and the uncut rig on two
+(c11 by failing findings, c16 by score: there the cut bought nothing).
+
 ## What is left
 
 - Crotch: 33 failing vertices on 7 rigs, none above 9 on one rig.
 - Pokes: up 1.7 to 3.6 points on six garment rigs (Tears and pokes). A
   lifted robe half folds into the waist; nothing limits that yet.
-- Armpits and sleeves: not solved (Tried, 4). The set's armpit count is
-  174 after the cut against 147 before: one long-coat rig whose sleeves
-  are joined to the coat's skirt goes 83 -> 117 once the skirt's halves
-  follow the legs. The route keeps that rig uncut (it ranks by failing
+- Sleeves: not solved (Tried, 4). The set's armpit count is 174 after
+  the leg cut against 147 before: one long-coat rig whose cuffs are
+  joined to the coat's skirt goes 83 -> 117 once the skirt's halves
+  follow the legs, and it is the one rig of the hard four still above
+  0.7 % tears. The route keeps that rig uncut (it ranks by failing
   findings first).
 - Five rigs rank no better cut than uncut and the route keeps them as
   they were: the sleeve rig above, two that were already passing and
   score a little lower cut, one passing rig that gains a finding (four
   crotch vertices), and the other seed of the long open coat.
-- The walls are flat and take single texels from their rim. On the set
-  they read as the garment's dark inside; a wall has no paint of its own
-  and no vertices but its rim, so a long one moves as a few large
-  triangles.
+- The walls are flat. They take single texels of the cloth 1.5 cm
+  outside the cut and its shading at the rim (on the cut itself the
+  paint is a dark groove, and the first walls read as a hole); a wall
+  has no paint of its own and no vertices but its rim, so a long one
+  moves as a few large triangles.
 - A bare mesh (no skeleton) is supported by the cut but was not measured:
   the set is rigged.
 - Routes 2 and 4 were not tried.

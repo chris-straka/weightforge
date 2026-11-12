@@ -805,11 +805,22 @@ fn tri_tri(a: [Vec3; 3], b: [Vec3; 3]) -> bool {
 /// whose rest centroids are farther apart than `sep` (so the natural fold
 /// inside a bent elbow does not count).
 pub fn self_intersections(model: &Model, posed: &[Vec3], sep: f64) -> Vec<bool> {
-    let nv = model.nverts();
-    let mut hit = vec![false; nv];
+    let mut hit = vec![false; model.nverts()];
+    for (a, b) in self_intersection_pairs(model, posed, sep) {
+        for &x in model.tris[a as usize].iter().chain(model.tris[b as usize].iter()) {
+            hit[x as usize] = true;
+        }
+    }
+    hit
+}
+
+/// The triangle pairs behind `self_intersections`: (a, b) with a < b,
+/// each pair once.
+pub fn self_intersection_pairs(model: &Model, posed: &[Vec3], sep: f64) -> Vec<(u32, u32)> {
+    let mut pairs = Vec::new();
     let tris = &model.tris;
     if tris.is_empty() {
-        return hit;
+        return pairs;
     }
     let mean_edge = {
         let mut s = 0.0;
@@ -860,12 +871,10 @@ pub fn self_intersections(model: &Model, posed: &[Vec3], sep: f64) -> Vec<bool> 
                 let pa = ta.map(|x| posed[x as usize]);
                 let pb = tb.map(|x| posed[x as usize]);
                 if tri_tri(pa, pb) && !tri_tri(ta.map(|x| model.rest[x as usize]), tb.map(|x| model.rest[x as usize])) {
-                    for &x in ta.iter().chain(tb.iter()) {
-                        hit[x as usize] = true;
-                    }
+                    pairs.push((a.min(b) as u32, a.max(b) as u32));
                 }
             }
         }
     }
-    hit
+    pairs
 }

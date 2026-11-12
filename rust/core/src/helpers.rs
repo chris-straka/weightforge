@@ -270,13 +270,31 @@ pub fn band(model: &Model, ctx: &Ctx, w: &Weights, width: f64) -> Weights {
     reassign(sk, &cur)
 }
 
+/// Joints that are the body for every helper: outside all helper
+/// drivers' subtrees (so never another limb) and not a helper.
+fn body_joints(sk: &Skeleton) -> Vec<bool> {
+    (0..sk.joints.len())
+        .map(|j| helper_of(sk, j).is_none() && !sk.helpers.iter().any(|h| j == h.driver || is_ancestor(sk, h.driver, j)))
+        .collect()
+}
+
 /// Fold helper weight back into the drivers, then re-blend every vertex
-/// that mixes a driver with its ancestors. Identity without helpers.
+/// that mixes a driver with the body. Identity without helpers.
+///
+/// All helpers of a vertex are re-blended at once: the body weight is
+/// shared among the drivers on the vertex in proportion to their weight,
+/// and each driver re-blends against its share. So a crotch vertex on both
+/// thighs and the hips comes out the same on both sides whatever order the
+/// helpers are listed in, and as motion (`equivalent`) it keeps its input
+/// when the body weight sits on the helpers' parent (the hips). The body
+/// is never another limb: run one after another, the first thigh's
+/// helper counted the other thigh as body and drained it (hips 0.4,
+/// thighs 0.3 / 0.3 came out as motion 0.3 / 0.171).
 pub fn reassign(sk: &Skeleton, w: &Weights) -> Weights {
     if sk.helpers.is_empty() {
         return w.clone();
     }
-    let anc = outside(sk);
+    let body = body_joints(sk);
     w.iter()
         .map(|vw| {
             let mut acc: VW = Vec::new();
@@ -287,21 +305,30 @@ pub fn reassign(sk: &Skeleton, w: &Weights) -> Weights {
                     None => acc.push((j, x)),
                 }
             }
-            for (k, h) in sk.helpers.iter().enumerate() {
-                let limb: f64 = acc.iter().filter(|e| e.0 as usize == h.driver).map(|e| e.1).sum();
-                let prox: f64 = acc.iter().filter(|e| anc[k][e.0 as usize]).map(|e| e.1).sum();
-                let (scale, hw, dw) = reblend(limb, prox, h.share);
-                if hw <= 0.0 {
-                    continue;
-                }
-                for e in acc.iter_mut() {
-                    if anc[k][e.0 as usize] {
-                        e.1 *= scale;
-                    } else if e.0 as usize == h.driver {
+            let on = |acc: &VW, j: usize| -> f64 { acc.iter().filter(|e| e.0 as usize == j).map(|e| e.1).sum() };
+            let limbs: Vec<f64> = sk.helpers.iter().map(|h| on(&acc, h.driver)).collect();
+            let body_total: f64 = acc.iter().filter(|e| body[e.0 as usize]).map(|e| e.1).sum();
+            let limb_total: f64 = limbs.iter().filter(|&&l| l > 0.0).sum();
+            if body_total > 0.0 && limb_total > 0.0 {
+                let mut kept = 0.0;
+                let mut added: VW = Vec::new();
+                for (k, h) in sk.helpers.iter().enumerate() {
+                    if limbs[k] <= 0.0 {
+                        continue;
+                    }
+                    let share_of_body = body_total * limbs[k] / limb_total;
+                    let (scale, hw, dw) = reblend(limbs[k], share_of_body, h.share);
+                    kept += scale * share_of_body;
+                    for e in acc.iter_mut().filter(|e| e.0 as usize == h.driver) {
                         e.1 = dw;
                     }
+                    added.push((h.joint as u32, hw));
                 }
-                acc.push((h.joint as u32, hw));
+                let f = kept / body_total;
+                for e in acc.iter_mut().filter(|e| body[e.0 as usize]) {
+                    e.1 *= f;
+                }
+                acc.extend(added);
             }
             acc.retain(|e| e.1 > 0.0);
             normalize_vw(prune_vw(&acc, 4, 0.0))
@@ -406,6 +433,53 @@ mod tests {
         let a = evaluate(&m, &ctx, &m.weights);
         let b = evaluate(&plain, &Ctx::new(&plain, &CtxOpts::default()), &plain.weights);
         assert_eq!(a.flags, b.flags);
+    }
+
+    /// A crotch vertex weighted hips 0.4, left thigh 0.3, right thigh 0.3.
+    /// Re-blending onto the thigh helpers must keep what the vertex does:
+    /// as motion (`equivalent`) it is still 0.4 / 0.3 / 0.3, the same
+    /// weights whichever helper runs first, and mirrored inputs give
+    /// mirrored outputs.
+    #[test]
+    fn crotch_reblend_is_even_and_order_free() {
+        let m = with_helpers();
+        let sk = &m.skel;
+        let j = |n: &str| sk.names.iter().position(|x| x == n).unwrap() as u32;
+        let (hips, l, r) = (j("DEF-spine"), j("DEF-thigh.L"), j("DEF-thigh.R"));
+        let (hl, hr) = (j("DEF-thigh_twist.L"), j("DEF-thigh_twist.R"));
+        let swap = |x: u32| match x {
+            _ if x == l => r,
+            _ if x == r => l,
+            _ if x == hl => hr,
+            _ if x == hr => hl,
+            o => o,
+        };
+        let sorted = |vw: &VW| {
+            let mut v = vw.clone();
+            v.sort_by_key(|e| e.0);
+            v
+        };
+        let mut reversed = sk.clone();
+        reversed.helpers.reverse();
+        for (wh, wl, wr) in [(0.4, 0.3, 0.3), (0.5, 0.35, 0.15), (0.2, 0.1, 0.7)] {
+            let input: Weights = vec![vec![(hips, wh), (l, wl), (r, wr)]];
+            let mirrored: Weights = vec![vec![(hips, wh), (l, wr), (r, wl)]];
+            let a = reassign(sk, &input);
+            let b = reassign(&reversed, &input);
+            for (x, y) in sorted(&a[0]).iter().zip(sorted(&b[0]).iter()) {
+                assert_eq!(x.0, y.0);
+                assert!((x.1 - y.1).abs() < 1e-12, "order changed the weights: {:?} vs {:?}", a[0], b[0]);
+            }
+            let motion = equivalent(sk, &a);
+            let on = |j: u32| motion[0].iter().filter(|e| e.0 == j).map(|e| e.1).sum::<f64>();
+            assert!((on(hips) - wh).abs() < 1e-9 && (on(l) - wl).abs() < 1e-9 && (on(r) - wr).abs() < 1e-9, "motion {:?}", motion[0]);
+            let mut m_out: VW = reassign(sk, &mirrored)[0].iter().map(|&(j, x)| (swap(j), x)).collect();
+            m_out.sort_by_key(|e| e.0);
+            for (x, y) in sorted(&a[0]).iter().zip(m_out.iter()) {
+                assert_eq!(x.0, y.0);
+                assert!((x.1 - y.1).abs() < 1e-12, "mirror: {:?} vs {:?}", a[0], m_out);
+            }
+        }
     }
 
     #[test]

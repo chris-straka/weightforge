@@ -21,6 +21,7 @@ pub mod scene;
 pub mod skin;
 pub mod solve;
 pub mod transfer;
+pub mod unfuse;
 pub mod voxel;
 
 use std::path::Path;

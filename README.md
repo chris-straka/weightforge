@@ -78,6 +78,9 @@ evidence: [`docs/pick-and-bands.md`](docs/pick-and-bands.md).
 `--skintokens` adds the ML candidate: SkinTokens weights for the input's
 own skeleton (`skintokens skin`, sibling repo `~/Games/_blender/skintokens`,
 Rust, ~20 s on the M4; opt-in, so default runs stay byte-deterministic).
+On a body whose fused legs were cut apart (meshkit `tools/unfuse.py`
+records the cut in the file; see "Legs that share one shell" below) two
+more candidates are built: `own-legs` and `limbs-apart`.
 It writes `fixed.glb` (in place: only JOINTS_0/WEIGHTS_0 bytes change,
 never positions or bones), `fixed.report.json` (before/after per region,
 method chosen, candidate scores), and with `--sheet` the A/B picture.
@@ -132,6 +135,36 @@ of 3 SkinTokens seeds; was 73.3 / 75.4 / 77.8), passing in 5 of 9 runs
 fails the recheck. See [`docs/pick-and-bands.md`](docs/pick-and-bands.md);
 sheets in `~/Downloads/weightforge-fix/`.
 
+## Legs that share one shell
+
+A generated human is one shell. Where it wears a tunic, a coat or wide
+trousers, or stands with its thighs together, the shell below the hips is
+one lump holding both thighs; the rig splits the lump down the middle, one
+half on each thigh, and it tears there when a leg lifts (`hip_forward`).
+No weights repair that: spread the split wider and the skin stops
+tearing and collapses instead (measured, `docs/unfuse-log.md`). The
+repair is a cut, and it is a mesh edit, so it is not made here:
+`meshkit/tools/unfuse.py` slits the lump along the plane between the
+legs from the hip joints down and walls each half, and writes the cut
+into the mesh's `extras.unfuse`. On such a file `fix` builds two more
+candidates (`core/src/unfuse.rs`):
+
+- `own-legs`: skin whose outline (a horizontal cut through the vertex)
+  lies wholly on one leg's side of the middle plane gives up its weight
+  on the other leg's bones to their counterparts on its own (thigh to
+  thigh, shin to shin, helper to helper).
+- `limbs-apart`: that, and a falloff at the crotch: skin near the middle
+  plane follows the hips at and above the cut's top and takes up its leg
+  over 0.3 thigh lengths below it.
+
+A file that was not cut gets neither, and `fix` runs on it as before.
+`motionforge/tools/tripo_rig.py --unfuse` runs the cut and keeps it only
+when the cut copy ranks better. Bench and numbers: `bench/unfuse.py`,
+`docs/unfuse-log.md`. Probes (`rust/core/examples`): `fused_probe` (what
+joins two limbs, cross-sections, failing vertices per pose),
+`worst_edges` (the most stretched edges of a pose), `limbs_apart_try`
+(the weights step alone).
+
 ## Blender
 
 `blender/weightforge/` (GPL-3.0-or-later): sidebar tab with Check (heat
@@ -145,12 +178,15 @@ map in the `weightforge_bad` color attribute), Pose Sheet, and Fix
         --python blender/tests/test_headless.py
     bench/run.py [models_dir]      # real assets (gitignored), A/B sheets + index
     bench/p3.py  [models_dir]      # P3 vs P2 on the 10 worst regions
+    bench/unfuse.py run|table ...  # fused legs: fix and score a folder of rigs, lay runs side by side
+    blender -b --python bench/rest_diff.py -- A.glb B.glb --out DIR    # rest pose unchanged by a mesh edit?
+    blender -b --python bench/pose_paint.py -- A.glb B.glb --out DIR   # two rigs posed with their paint
 
 ## Layout
 
 - `rust/core/` — scene (GLB IO, welding), poses, skinning (LBS/DQS),
   voxel geodesics, metrics, report, render, transfer/inpaint, fix,
-  fixtures. MIT.
+  unfuse (legs apart), fixtures. MIT.
 - `rust/cli/` — the `weights` binary + CLI contract test.
 - `blender/` — extension + headless test.
 - `poses/` — range-of-motion sets (RON).

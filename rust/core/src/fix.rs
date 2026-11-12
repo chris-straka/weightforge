@@ -855,8 +855,17 @@ fn fix_once(file: &str, model: &Model, ctx: &Ctx, o: &FixOpts) -> FixResult {
     // Only the reported bad vertices (plus a margin) change; a failing
     // piece changes as a whole. The rest of a region keeps its weights.
     let mask = crate::report::finding_mask(ctx, &ev0, &rep0);
+    // In a failing region the strained skin around the tear opens too
+    // (stretch past 0.7 of the limit): the vertices over the line alone
+    // are too small an area to rebuild a joint's band in.
+    let strained = |v: usize| failing[ctx.vregion[v] as usize] && ev0.max_stretch[v] > 0.7 * ctx.th.stretch;
     let flagged: Vec<bool> = (0..model.nverts())
-        .map(|v| o.all_regions || mask[v] & !crate::metrics::F_INTERSECT != 0 || (is_piece(model, v) && failing[ctx.vregion[v] as usize]))
+        .map(|v| {
+            o.all_regions
+                || mask[v] & !crate::metrics::F_INTERSECT != 0
+                || strained(v)
+                || (is_piece(model, v) && failing[ctx.vregion[v] as usize])
+        })
         .collect();
     // Isolated flags (a stray vertex or two) do not open an area for change.
     let flagged = drop_small_clusters(model, &flagged, ctx.th.region_min_bad);

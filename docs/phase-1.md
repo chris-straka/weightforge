@@ -55,6 +55,16 @@ Gate: golden images on the fixture mannequin; sheet readable on a phone
   verdict. One JSON line a case (rig, pose, stretch, failing vertices) is
   the key the person's "fine" or "broken" is laid against.
   `--number-from` continues the numbers across rigs.
+- The stretch limit is 3.5x, set from the first probe set (2026-11-11:
+  24 loops of five rigs, the owner marking which looked broken). Every
+  pose up to 3.32x was called fine but one mild armpit at 2.51x; the torn
+  ones started at 4.27x; long fur at 4.55x looked fine. It was 2.5x, tuned
+  on the mannequin, and no real rig passed. `fix` now also opens the
+  strained skin around a failure (past 0.7 of the limit) in a failing
+  region: the vertices over a higher line alone were too small an area to
+  rebuild a knee's band in on the dense mannequin. Two things the owner
+  called broken that no stretch limit sees: fingers that don't curl with
+  their bones, and a move that makes no sense.
 - The skeleton is drawn through the body in every close-up (compare
   rows, their clips, probe cases): a line along each bone and a dot at
   each joint, so the skin can be laid against where it is meant to bend

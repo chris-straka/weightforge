@@ -2,8 +2,8 @@
 //! works the same at any mesh density. The mannequin is built at five
 //! densities (0.8x to 2x the edges per metre). Its clean twin is the
 //! reference at each density: the check's own verdict on ground-truth
-//! weights varies a little with tessellation (its armpit sits at the 2.5x
-//! stretch limit), and that is the checker, not the fix.
+//! weights varies a little with tessellation (its armpit sat at the stretch
+//! limit when that was 2.5x), and that is the checker, not the fix.
 
 use weightforge_core::fix::{FixOpts, fix};
 use weightforge_core::fixtures;

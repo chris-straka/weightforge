@@ -45,7 +45,11 @@ pub struct Thresholds {
 impl Default for Thresholds {
     fn default() -> Self {
         Thresholds {
-            stretch: 2.5,
+            // Set to a person's eye (2026-11-11, `weights probe`, 24
+            // unmarked loops of five rigs): every pose up to 3.32 was
+            // called fine but one mild armpit at 2.51, and the torn ones
+            // started at 4.27. It was 2.5, tuned on the test mannequin.
+            stretch: 3.5,
             thin: 0.5,
             thin_extent: 1.5,
             bleed_weight: 0.05,

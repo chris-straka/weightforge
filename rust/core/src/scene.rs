@@ -94,6 +94,10 @@ pub struct Model {
     pub adj: Vec<Vec<u32>>,
     /// Bounding-box diagonal of the rest shape (the scale every threshold uses).
     pub scale: f64,
+    /// Welded vertices with weight on a joint index past the end of the
+    /// skin's joint list (an invalid file), and the largest such index.
+    /// Those weights are dropped and the rest renormalised on load.
+    pub bad_joints: (usize, u32),
 }
 
 fn vec3_of(v: Option<&Value>, d: Vec3) -> Vec3 {
@@ -429,6 +433,8 @@ impl Model {
         let mut vpart: Vec<u32> = Vec::new();
         let mut tris: Vec<[u32; 3]> = Vec::new();
         let mut acc_w: Vec<Vec<VW>> = Vec::new(); // raw weight copies per welded vertex
+        let mut bad_joint: Vec<bool> = Vec::new(); // per welded vertex
+        let mut bad_joint_max = 0u32;
         let mut seen_mesh = std::collections::BTreeSet::new();
 
         // Quantization step for welding.
@@ -497,6 +503,7 @@ impl Model {
                     None
                 };
                 let mut raw_w: Vec<VW> = vec![Vec::new(); pos.len()];
+                let mut raw_bad = vec![false; pos.len()];
                 for &(ja, wa) in &sets {
                     let (_, jv) = glb.read_f64(ja)?;
                     let (_, wv) = glb.read_f64(wa)?;
@@ -509,6 +516,9 @@ impl Model {
                             let w = wv[v * 4 + c];
                             if w > 0.0 && (j as usize) < nj {
                                 raw_w[v].push((j, w));
+                            } else if w > 0.0 {
+                                raw_bad[v] = true;
+                                bad_joint_max = bad_joint_max.max(j);
                             }
                         }
                     }
@@ -521,8 +531,10 @@ impl Model {
                         bind.push(Vec3::from_f32(*p3));
                         vpart.push(part as u32);
                         acc_w.push(Vec::new());
+                        bad_joint.push(false);
                         (bind.len() - 1) as u32
                     });
+                    bad_joint[id as usize] |= raw_bad[v];
                     acc_w[id as usize].push(normalize_vw(std::mem::take(&mut raw_w[v])));
                     raw_to_weld.push(id);
                 }
@@ -592,7 +604,8 @@ impl Model {
         }
         let scale = (hi - lo).len().max(1e-9);
         let (edges, adj) = build_edges(bind.len(), &tris);
-        Ok(Model { glb, skel, parts, prims, bind, rest, tris, vpart, weights, seam_split, edges, adj, scale })
+        let bad_joints = (bad_joint.iter().filter(|&&b| b).count(), bad_joint_max);
+        Ok(Model { glb, skel, parts, prims, bind, rest, tris, vpart, weights, seam_split, edges, adj, scale, bad_joints })
     }
 
     /// Per mesh (in file order): (mesh name, node name, raw positions of

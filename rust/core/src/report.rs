@@ -217,6 +217,20 @@ pub fn build(file: &str, model: &Model, ctx: &Ctx, ev: &Eval) -> Report {
             detail: "UV-seam copies of a vertex carry different weights (cracks when posed)".into(),
         });
     }
+    let (bad_verts, bad_max) = model.bad_joints;
+    if bad_verts > 0 {
+        findings.push(Finding {
+            code: "D_JOINT_RANGE".into(),
+            severity: "warn".into(),
+            region: "*".into(),
+            verts: bad_verts,
+            detail: format!(
+                "weights on joint indices past the skin's {} joints (up to {bad_max}): the file is invalid there; \
+                 those weights were dropped and the rest renormalised, so this check measured that skin",
+                model.njoints()
+            ),
+        });
+    }
     let solid = ctx.geo.solid.clone();
     if !solid.trusted {
         findings.push(Finding {

@@ -7,6 +7,11 @@
 //! well than a 20% mix), so this allows 0.5 points of slack against the
 //! best score so far. Before the exact pick, the greedy lost 7 points this
 //! way on a real rig (a better SkinTokens skin: 52 -> 46).
+//!
+//! The candidate is the only repair offered (no built-in methods): with
+//! them, `fix` keeps the better of its runs with and without the
+//! candidate, the run without already reached the same score for every t,
+//! and the test could not fail.
 
 use weightforge_core::fix::{FixOpts, fix};
 use weightforge_core::fixtures;
@@ -39,18 +44,24 @@ fn better_external_candidate_does_not_score_worse() {
         let ctx = Ctx::new(&m, &CtxOpts::default());
         let (gt_body, gt_cape) = fixtures::ground_truth();
         let mut best = f64::MIN;
+        let mut first = None;
         for t in [1.0, 0.8, 0.6, 0.4, 0.2, 0.0] {
             let mut c = fixtures::build(fault);
             c.body_w = mix(&f.body_w, &gt_body, t);
             c.cape_w = mix(&f.cape_w, &gt_cape, t);
             let cand = Model::from_glb(fixtures::to_glb(&c)).unwrap();
-            let o = FixOpts { external: vec![("cand".into(), &cand)], ..FixOpts::default() };
+            let o = FixOpts { methods: Vec::new(), external: vec![("cand".into(), &cand)], ..FixOpts::default() };
             let r = fix(fault, &m, &ctx, &o);
             eprintln!("{fault} t {t}: {:.1} -> {:.1}", r.fix.before.score, r.fix.after.score);
             assert!(r.fix.after.score >= r.fix.before.score);
             assert!(r.fix.after.score >= best - 0.5, "{fault}: better candidate (t {t}) scored {} after {best}", r.fix.after.score);
             best = best.max(r.fix.after.score);
+            first.get_or_insert(r.fix.after.score);
         }
+        // The slide matters: the ground truth repairs far more than the
+        // faulted input offered as its own candidate.
+        let first = first.unwrap();
+        assert!(best > first + 10.0, "{fault}: the candidate made no difference ({first:.1} .. {best:.1})");
     }
 }
 

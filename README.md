@@ -45,7 +45,20 @@ per-bone set for anything else, or your own `.ron` (see
 `poses/humanoid.ron`), plus samples of the asset's own clips. It reports
 per-region scores (0–100) and findings: `D_STRETCH`, `D_VOLUME`,
 `D_BLEED`, `D_NOISE`, `D_PIECE_FOLLOW`, `D_PIECE_BONES`, `D_UNWEIGHTED`
-(fail), `D_INTERSECT`, `D_SEAM` (warn).
+(fail), `D_INTERSECT`, `D_SEAM`, `D_JOINT_RANGE` (weights on a joint index
+past the skin's joints: dropped on load), `D_OPEN_MESH` (the surface is
+too open to tell inside from outside) (warn).
+The standard humanoid skeleton's neck and head are Rigify's numbered spine
+(`DEF-spine.004`/`.005` neck, `DEF-spine.006` head): they get the head
+poses, and the spine poses bend `DEF-spine.001`-`.003` only (until
+2026-11-12 the numbered neck and head counted as spine, so the head poses
+never ran on it and the spine bend was spread over the neck and head). A
+pose that cannot run on the skeleton is a `pose not tested:` line (JSON
+`skipped_poses`), never left out silently. Distances through the body are
+measured in a voxel fill that small openings in the surface do not empty
+(see `core/src/voxel.rs`); the report's `solid` says how many openings
+there are and whether the fill can be trusted. Unknown flags are a usage
+error (exit 2).
 
 **fix** builds candidates: the input (always candidate 0), despeckle,
 smooth, geodesic voxel binding, geodesic joint bands, transfer + inpaint,
@@ -88,7 +101,11 @@ into the other; on the 4.5k-vertex hero mesh that is the old 6 rings /
 `helper-band+optimize` refines that with the LBS-to-DQS fit. Each is
 tried at 0.7x, 1x and 1.4x that width (`-narrow`, `-wide`): wider trades
 stretch for collapse, and the right width depends on the body. Generic candidates leave helpers unweighted (re-blending
-them too scored worse). Why: SkinTokens' armpit/groin transition is one
+them too scored worse). A vertex on two limbs (the crotch, between the
+thighs) re-blends both at once, sharing the body weight between them, so
+it comes out the same on both sides whatever order the helpers are in
+(until 2026-11-12 the first thigh's helper counted the other thigh as
+body: hips 0.4, thighs 0.3 / 0.3 came out moving as 0.3 / 0.171). Why: SkinTokens' armpit/groin transition is one
 or two edges wide, so a 90 deg swing tears those edges; widening it
 alone collapses the joint, and the half-turn helper holds the volume.
 

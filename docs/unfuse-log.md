@@ -228,16 +228,16 @@ Tears: the hard four go 2.56, 1.96, 4.92, 0.66 to 0.00, 1.78, 0.08,
 to it (its tears are the sleeves').
 
 Pokes: the cut does trade a little. The set's median goes 10.9 to 11.5,
-and six rigs gain 1.7 to 3.6 points: three robe or skirt figures (+1.7,
-+3.3, +3.6), the wide trousers (+3.1) and the two long coats with wide
-sleeves (+3.2, +1.8). `pokes_probe` counts them per pose and away from
+and six rigs gain 1.7 to 3.6 points (c03, c06, c11, c14, c15, c16):
+among them a robe, a skirt, the wide trousers and the long coat with
+wide sleeves. `pokes_probe` counts them per pose and away from
 the cut (more than 5 mm from its plane): the rise is not the new inner
 walls, it is the garment. Before the cut a lifted leg could not take
 its half of a robe with it (the other leg held it, and it tore); now
 the half lifts whole and its top folds into the belt and belly at the
 hip, as a bare thigh does at 90 degrees. On the wide trousers the gain
 is in the knee poses (242 flagged vertices to 362): each trouser leg now
-folds at its own knee. The other fourteen rigs move by 0.3 points or
+folds at its own knee. The other fourteen rigs move by 0.4 points or
 less. Nothing was seen passing through the body that did not before:
 `bench/pose_paint.py` pictures of the worst gains show the lifted half
 against the waist, and the other half's inner wall where the garment

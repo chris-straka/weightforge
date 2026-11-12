@@ -14,6 +14,7 @@ pub mod helpers;
 pub mod math;
 pub mod metrics;
 pub mod pick;
+pub mod poke;
 pub mod poses;
 pub mod render;
 pub mod report;

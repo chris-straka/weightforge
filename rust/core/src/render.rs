@@ -1178,6 +1178,37 @@ pub fn pose_pokes(ev: &Eval) -> Vec<usize> {
     ev.bad_in_pose.iter().map(|l| l.iter().filter(|(_, f)| f & F_INTERSECT != 0).count()).collect()
 }
 
+/// A pose's name with its side taken out, so a pose and its mirror share
+/// it: `.L`/`.R`, `_L`/`_R` at the end or `_L_`/`_R_` inside (any case),
+/// and on the right side a trailing `+`/`-` turned over, since a generic
+/// per-bone set mirrors the direction too (`leg_L_1_bend_a-` and
+/// `leg_R_1_bend_a+` are one pose).
+pub fn twin_key(name: &str) -> String {
+    for (mark, right) in
+        [(".L", false), (".R", true), ("_L", false), ("_R", true), (".l", false), (".r", true), ("_l", false), ("_r", true)]
+    {
+        let (base, sign) = match name.strip_suffix(['+', '-']) {
+            Some(b) => (b, &name[b.len()..]),
+            None => (name, ""),
+        };
+        let inner = format!("{mark}_");
+        let cut = if let Some(b) = base.strip_suffix(mark) {
+            Some(format!("{b}*"))
+        } else {
+            base.find(&inner).map(|i| format!("{}*_{}", &base[..i], &base[i + inner.len()..]))
+        };
+        if let Some(b) = cut {
+            let sign = match (right, sign) {
+                (true, "+") => "-",
+                (true, "-") => "+",
+                (_, s) => s,
+            };
+            return format!("{b}{sign}");
+        }
+    }
+    name.to_string()
+}
+
 /// The hinge a pose bends about: the axis of its largest turn, when that
 /// turn bends its bone rather than twisting it along its length.
 fn hinge(s: &Side, p: usize) -> Option<Vec3> {
@@ -1202,9 +1233,10 @@ fn view_dir(v: &View) -> Vec3 {
 
 /// The poses where the body passes through itself most, at most `max`
 /// (a pose and its left or right twin used once, the side with more), each
-/// framed on its flagged vertices. The camera is chosen from the compare
-/// views and from views along the bend's hinge (straight along it, and
-/// tilted 20 degrees to the front, up or down; both ends): of the cameras
+/// framed on its flagged vertices and the joint that turns. The camera is
+/// chosen from the compare views and from views along the bend's hinge
+/// (straight along it, and tilted 20 degrees to the front, up or down;
+/// both ends): of the cameras
 /// that see at least 80% as many of the flagged vertices as the best one,
 /// the one looking most nearly along the hinge, since the overlap sits
 /// inside the fold and shows side-on. Without a hinge (a twist, a clip
@@ -1212,7 +1244,8 @@ fn view_dir(v: &View) -> Vec3 {
 pub fn probe_pokes(s: &Side, o: &ZoomOpts, max: usize) -> Vec<PokeCase> {
     let counts = pose_pokes(s.ev);
     let rest = posed(s.model, s.ctx, None, s.w);
-    let stem = |n: &str| n.trim_end_matches(".L").trim_end_matches(".R").to_string();
+    let radius = crate::poke::joint_radii(s.model, &crate::poke::dominant_joints(s.model));
+    let stem = twin_key;
     let mut order: Vec<usize> = (0..counts.len()).filter(|&p| counts[p] > 0).collect();
     order.sort_by(|&a, &b| counts[b].cmp(&counts[a]).then(a.cmp(&b)));
     let mut used: Vec<String> = Vec::new();
@@ -1246,6 +1279,17 @@ pub fn probe_pokes(s: &Side, o: &ZoomOpts, max: usize) -> Vec<PokeCase> {
             focus = near;
         }
         let total = focus.iter().filter(|f| **f).count().max(1);
+        // The crop holds the bend as well as the pokes: the skin around the
+        // joint that turns (within its limb radius of the joint), so a hand
+        // poking a thigh in a side bend comes with the waist that bent.
+        let mut frame_on = focus.clone();
+        if let Some(&(j, _, _)) = s.ctx.poses[p].moves.iter().max_by(|a, b| a.2.abs().total_cmp(&b.2.abs())) {
+            let pivot = s.ctx.segs[p][j].0;
+            let r = radius[j].max(1e-6);
+            for (v, f) in frame_on.iter_mut().enumerate() {
+                *f |= (mesh[v] - pivot).len() <= r;
+            }
+        }
         let axis = hinge(s, p);
         let mut views: Vec<(View, String)> =
             ZOOM_VIEWS.iter().map(|&(y, pt, n)| (View { yaw_deg: y, pitch_deg: pt }, n.to_string())).collect();
@@ -1276,7 +1320,7 @@ pub fn probe_pokes(s: &Side, o: &ZoomOpts, max: usize) -> Vec<PokeCase> {
         let scored: Vec<(f64, f64, View, Fit, String)> = views
             .into_iter()
             .filter_map(|(view, name)| {
-                let fits = zoom_fits(&view, [&rest, &rest], [&mesh, &mesh], [&focus, &focus], o.cell_w, o.cell_h, PROBE_MIN)?;
+                let fits = zoom_fits(&view, [&rest, &rest], [&mesh, &mesh], [&frame_on, &frame_on], o.cell_w, o.cell_h, PROBE_MIN)?;
                 let half = Fit { ppu: fits[0].ppu * 0.5, ..fits[0] };
                 let seen = visible(&mesh, &s.model.tris, &focus, &view, half, o.cell_w / 2, o.cell_h / 2) as f64 / total as f64;
                 let along = axis.map_or(0.0, |a| view_dir(&view).dot(a).abs());
@@ -1341,6 +1385,15 @@ mod tests {
         let all = rank_rows(&["a"], &[1], &["b"], &[2], 9);
         assert_eq!(all.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(), vec!["b", "a"]);
         assert_eq!((all[0].a, all[0].b), (None, Some((0, 2))));
+    }
+
+    #[test]
+    fn a_pose_and_its_mirror_share_a_twin_key() {
+        assert_eq!(twin_key("elbow_140.L"), twin_key("elbow_140.R"));
+        assert_eq!(twin_key("leg_joint_L_1_bend_a-"), twin_key("leg_joint_R_1_bend_a+"));
+        assert_ne!(twin_key("leg_joint_L_1_bend_a-"), twin_key("leg_joint_L_1_bend_a+"));
+        assert_ne!(twin_key("leg_joint_L_1_bend_a-"), twin_key("leg_joint_L_2_bend_a-"));
+        assert_eq!(twin_key("spine_bend"), "spine_bend");
     }
 
     #[test]

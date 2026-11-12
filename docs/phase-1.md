@@ -65,6 +65,13 @@ Gate: golden images on the fixture mannequin; sheet readable on a phone
   rebuild a knee's band in on the dense mannequin. Two things the owner
   called broken that no stretch limit sees: fingers that don't curl with
   their bones, and a move that makes no sense.
+  Re-measured 2026-11-12 after the standard skeleton's neck and head
+  got their own roles (`core/examples/pose_stretch.rs` reproduces every
+  stretch in the answer key on the old build): no judged case changes
+  side of 3.5x. One moved: a `spine_forward` the owner called fine went
+  from 2.20x to 3.44x, just under the line, because the 45 degree bend
+  now goes into the three spine bones instead of being spread over the
+  neck and head too. That pose is harsher than the one judged.
 - The skeleton is drawn through the body in every close-up (compare
   rows, their clips, probe cases): a line along each bone and a dot at
   each joint, so the skin can be laid against where it is meant to bend

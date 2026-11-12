@@ -1324,7 +1324,7 @@ fn fix_once(file: &str, model: &Model, ctx: &Ctx, o: &FixOpts) -> FixResult {
         Some(k) => k,
         None => (vec![0; nr], model.weights.clone(), evaluate(model, ctx, &model.weights), rep0.clone()),
     };
-    if rep1.score < rep0.score || new_fails(&rep1) {
+    if ranks_below(&rep1, &rep0) || new_fails(&rep1) {
         w = model.weights.clone();
         ev = ev0;
         rep1 = build(file, model, ctx, &ev);
@@ -1369,6 +1369,15 @@ fn fix_once(file: &str, model: &Model, ctx: &Ctx, o: &FixOpts) -> FixResult {
         findings_after: rep1.findings.clone(),
     };
     FixResult { weights: w, eval: ev, report_before: rep0, report_after: rep1, fix }
+}
+
+/// Whether a result ranks below another by the order every stage of the
+/// fix keeps: passing the gate first, then score. The last guard reverts to
+/// the input on this same order (it used to revert on score alone, so a
+/// result that passed at a lower score than a failing input was thrown away
+/// after the pick had kept it for passing).
+pub fn ranks_below(a: &Report, b: &Report) -> bool {
+    (a.pass, a.score) < (b.pass, b.score)
 }
 
 /// Mean L1 distance (halved, so 0..1 per vertex) between two weight sets.

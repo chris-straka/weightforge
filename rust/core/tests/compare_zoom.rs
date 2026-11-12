@@ -138,6 +138,9 @@ fn a_rows_clip_goes_into_the_pose_and_comes_back() {
     assert!(reds[28] > 500, "{}", reds[28]);
     assert!(reds[12] < reds[28]);
     assert_eq!(frames[0].rgb, frames[CLIP_FRAMES - 1].rgb);
+    // The skeleton is drawn over the body: bone lines and joint dots.
+    let count = |f: &Image, c: [u8; 3]| f.rgb.chunks(3).filter(|p| *p == c).count();
+    assert!(count(&frames[28], [70, 200, 255]) > 50 && count(&frames[28], [255, 214, 64]) > 50);
     // The pose moved the mesh: the held frame is not the rest frame.
     assert_ne!(frames[0].rgb, frames[28].rgb);
     assert_eq!((clip_phase(0), clip_phase(28), clip_phase(CLIP_FRAMES - 1)), (0.0, 1.0, 0.0));

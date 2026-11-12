@@ -796,12 +796,76 @@ struct ZoomView {
     flags: [Vec<bool>; 2],
 }
 
+/// A rig's joint matrices `t` of the way from rest (0) into a pose (1).
+fn mats_at(s: &Side, pick: Option<(usize, usize)>, t: f64) -> Vec<Mat4> {
+    match pick {
+        Some((p, _)) if t >= 1.0 => s.ctx.mats[p].clone(),
+        Some((p, _)) if t > 0.0 => joint_matrices(s.model, &pose_at(s.model, &s.ctx.poses[p], t)),
+        _ => vec![Mat4::IDENTITY; s.model.njoints()],
+    }
+}
+
 /// A rig's mesh `t` of the way from rest (0) into a pose (1).
 fn mesh_at(s: &Side, pick: Option<(usize, usize)>, t: f64) -> Vec<Vec3> {
-    match pick {
-        Some((p, _)) if t >= 1.0 => lbs(s.model, &s.ctx.mats[p], s.w),
-        Some((p, _)) if t > 0.0 => lbs(s.model, &joint_matrices(s.model, &pose_at(s.model, &s.ctx.poses[p], t)), s.w),
-        _ => posed(s.model, s.ctx, None, s.w),
+    lbs(s.model, &mats_at(s, pick, t), s.w)
+}
+
+/// Every bone's posed head and tail, for drawing the skeleton over the
+/// body.
+fn bones_at(s: &Side, mats: &[Mat4]) -> Vec<(Vec3, Vec3)> {
+    let sk = &s.model.skel;
+    (0..s.model.njoints()).map(|j| (mats[j].transform_point(sk.head[j]), mats[j].transform_point(sk.tail[j]))).collect()
+}
+
+const BONE: [u8; 3] = [70, 200, 255];
+const JOINT: [u8; 3] = [255, 214, 64];
+
+/// A filled disc inside the cell (x0, y0, w, h), clipped to it.
+#[allow(clippy::too_many_arguments)]
+fn disc(img: &mut Image, x0: usize, y0: usize, w: usize, h: usize, x: f64, y: f64, r: f64, c: [u8; 3]) {
+    if x + r < 0.0 || y + r < 0.0 || x - r >= w as f64 || y - r >= h as f64 {
+        return;
+    }
+    let (lo_x, hi_x) = ((x - r).floor().max(0.0) as usize, ((x + r).ceil() as usize).min(w.saturating_sub(1)));
+    let (lo_y, hi_y) = ((y - r).floor().max(0.0) as usize, ((y + r).ceil() as usize).min(h.saturating_sub(1)));
+    for py in lo_y..=hi_y {
+        for px in lo_x..=hi_x {
+            let (dx, dy) = (px as f64 + 0.5 - x, py as f64 + 0.5 - y);
+            if dx * dx + dy * dy <= r * r {
+                let o = ((y0 + py) * img.w + x0 + px) * 3;
+                img.rgb[o..o + 3].copy_from_slice(&c);
+            }
+        }
+    }
+}
+
+/// The skeleton drawn through the body, inside the cell (x0, y0, w, h):
+/// a line along each bone and a dot at each joint, so the eye can lay the
+/// skin against where it is meant to bend.
+#[allow(clippy::too_many_arguments)]
+fn draw_bones(img: &mut Image, x0: usize, y0: usize, w: usize, h: usize, bones: &[(Vec3, Vec3)], view: &View, f: Fit) {
+    let to = |p: Vec3| {
+        let q = view.to_cam(p);
+        ((q.x - f.cx) * f.ppu + w as f64 * 0.5, (f.cy - q.y) * f.ppu + h as f64 * 0.5)
+    };
+    for &(head, tail) in bones {
+        let (a, b) = (to(head), to(tail));
+        let len = ((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt();
+        // Walked a pixel at a time; `disc` clips what falls outside. A
+        // bone far longer than the cell is one that starts far outside it.
+        if len > 6.0 * (w + h) as f64 {
+            continue;
+        }
+        let steps = len.ceil().max(1.0) as usize;
+        for k in 0..=steps {
+            let t = k as f64 / steps as f64;
+            disc(img, x0, y0, w, h, a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t, 1.3, BONE);
+        }
+    }
+    for &(head, _) in bones {
+        let a = to(head);
+        disc(img, x0, y0, w, h, a.0, a.1, 5.5, [20, 22, 26]);
+        disc(img, x0, y0, w, h, a.0, a.1, 4.0, JOINT);
     }
 }
 
@@ -886,15 +950,17 @@ fn zoom_cell(
     cy: usize,
     o: &ZoomOpts,
     s: &Side,
-    mesh: &[Vec3],
+    mats: &[Mat4],
     face: &[([f64; 3], f64)],
     view: &View,
     f: Fit,
     label: &str,
 ) {
     let tris = &s.model.tris;
+    let mesh = &lbs(s.model, mats, s.w)[..];
     img.rect(cx + 2, cy, o.cell_w - 4, o.cell_h - 4, [32, 35, 42]);
     draw_clay(img, cx + 2, cy, o.cell_w - 4, o.cell_h - 4, mesh, tris, face, view, f);
+    draw_bones(img, cx + 2, cy, o.cell_w - 4, o.cell_h - 4, &bones_at(s, mats), view, f);
     let (iw, ih) = (o.cell_w / 5, o.cell_h / 3);
     let (ix, iy) = (cx + o.cell_w - iw - 8, cy + 6);
     img.rect(ix, iy, iw, ih, BG);
@@ -950,9 +1016,9 @@ pub fn compare_zoom(a: &Side, b: &Side, o: &ZoomOpts) -> Image {
         row_label(&mut img, y, v, labels);
         let picks = [v.row.a, v.row.b];
         for k in 0..2 {
-            let mesh = mesh_at(sides[k], picks[k], 1.0);
+            let mats = mats_at(sides[k], picks[k], 1.0);
             let face = fault_faces(&sides[k].model.tris, &v.flags[k], 1.0);
-            zoom_cell(&mut img, k * o.cell_w, y + ZROW, o, sides[k], &mesh, &face, &v.view, v.fits[k], labels[k]);
+            zoom_cell(&mut img, k * o.cell_w, y + ZROW, o, sides[k], &mats, &face, &v.view, v.fits[k], labels[k]);
             if picks[k].is_none() {
                 img.text(k * o.cell_w + 14, y + ZROW + 12, "NO SUCH POSE: AT REST", 2, DIM);
             }
@@ -1004,9 +1070,9 @@ pub fn compare_zoom_clips(a: &Side, b: &Side, o: &ZoomOpts, mut sink: impl FnMut
             let mut img = Image::new(2 * o.cell_w, ZROW + o.cell_h, BG);
             row_label(&mut img, 0, v, labels);
             for k in 0..2 {
-                let mesh = mesh_at(sides[k], picks[k], t);
+                let mats = mats_at(sides[k], picks[k], t);
                 let face = fault_faces(&sides[k].model.tris, &v.flags[k], t);
-                zoom_cell(&mut img, k * o.cell_w, ZROW, o, sides[k], &mesh, &face, &v.view, v.fits[k], labels[k]);
+                zoom_cell(&mut img, k * o.cell_w, ZROW, o, sides[k], &mats, &face, &v.view, v.fits[k], labels[k]);
             }
             sink(r, &v.row.name, f, &img);
         }
@@ -1103,8 +1169,8 @@ pub fn probe_clip(s: &Side, c: &ProbeCase, number: usize, o: &ZoomOpts, mut sink
     for f in 0..CLIP_FRAMES {
         let mut img = Image::new(o.cell_w, ZROW + o.cell_h, BG);
         img.text(12, 12, &format!("CASE {number:02}"), 5, FG);
-        let mesh = mesh_at(s, Some((c.pose, 0)), clip_phase(f));
-        zoom_cell(&mut img, 0, ZROW, o, s, &mesh, &face, &c.view, c.fit, "");
+        let mats = mats_at(s, Some((c.pose, 0)), clip_phase(f));
+        zoom_cell(&mut img, 0, ZROW, o, s, &mats, &face, &c.view, c.fit, "");
         sink(f, &img);
     }
 }

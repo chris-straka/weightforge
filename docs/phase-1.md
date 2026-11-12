@@ -55,4 +55,8 @@ Gate: golden images on the fixture mannequin; sheet readable on a phone
   verdict. One JSON line a case (rig, pose, stretch, failing vertices) is
   the key the person's "fine" or "broken" is laid against.
   `--number-from` continues the numbers across rigs.
+- The skeleton is drawn through the body in every close-up (compare
+  rows, their clips, probe cases): a line along each bone and a dot at
+  each joint, so the skin can be laid against where it is meant to bend
+  (the owner, on a probe case: "idk if the elbow is right there").
 - Font: own 5×7 bitmap glyphs (uppercase), no third-party font data.

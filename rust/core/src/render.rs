@@ -1161,6 +1161,150 @@ pub fn probe_cases(s: &Side, o: &ZoomOpts, targets: &[f64]) -> Vec<ProbeCase> {
     out
 }
 
+/// A self-intersection case (`probe --by intersect`): a pose where the rig's
+/// body passes through itself, and how much.
+pub struct PokeCase {
+    pub case: ProbeCase,
+    /// Vertices flagged `intersect` in this pose.
+    pub pokes: usize,
+    /// The deepest poke in the pose (`poke::deepest`).
+    pub depth: crate::poke::Depth,
+    /// The camera, in words (for the answer key, never on the clip).
+    pub view: String,
+}
+
+/// Per pose, the vertices flagged `intersect` in it.
+pub fn pose_pokes(ev: &Eval) -> Vec<usize> {
+    ev.bad_in_pose.iter().map(|l| l.iter().filter(|(_, f)| f & F_INTERSECT != 0).count()).collect()
+}
+
+/// The hinge a pose bends about: the axis of its largest turn, when that
+/// turn bends its bone rather than twisting it along its length.
+fn hinge(s: &Side, p: usize) -> Option<Vec3> {
+    let &(j, axis, _) = s.ctx.poses[p].moves.iter().max_by(|a, b| a.2.abs().total_cmp(&b.2.abs()))?;
+    let sk = &s.model.skel;
+    let along = (sk.tail[j] - sk.head[j]).normalized();
+    (axis.len2() > 1e-12 && axis.normalized().dot(along).abs() < 0.7).then(|| axis.normalized())
+}
+
+/// The camera whose direction toward the viewer is `back`, pitch held off
+/// the poles.
+fn view_toward(back: Vec3) -> View {
+    let b = back.normalized();
+    View { yaw_deg: b.x.atan2(b.z).to_degrees(), pitch_deg: b.y.clamp(-1.0, 1.0).asin().to_degrees().clamp(-75.0, 75.0) }
+}
+
+fn view_dir(v: &View) -> Vec3 {
+    let (sy, cy) = v.yaw_deg.to_radians().sin_cos();
+    let (sp, cp) = v.pitch_deg.to_radians().sin_cos();
+    v3(sy * cp, sp, cy * cp)
+}
+
+/// The poses where the body passes through itself most, at most `max`
+/// (a pose and its left or right twin used once, the side with more), each
+/// framed on its flagged vertices. The camera is chosen from the compare
+/// views and from views along the bend's hinge (straight along it, and
+/// tilted 20 degrees to the front, up or down; both ends): of the cameras
+/// that see at least 80% as many of the flagged vertices as the best one,
+/// the one looking most nearly along the hinge, since the overlap sits
+/// inside the fold and shows side-on. Without a hinge (a twist, a clip
+/// frame), the camera that sees the most.
+pub fn probe_pokes(s: &Side, o: &ZoomOpts, max: usize) -> Vec<PokeCase> {
+    let counts = pose_pokes(s.ev);
+    let rest = posed(s.model, s.ctx, None, s.w);
+    let stem = |n: &str| n.trim_end_matches(".L").trim_end_matches(".R").to_string();
+    let mut order: Vec<usize> = (0..counts.len()).filter(|&p| counts[p] > 0).collect();
+    order.sort_by(|&a, &b| counts[b].cmp(&counts[a]).then(a.cmp(&b)));
+    let mut used: Vec<String> = Vec::new();
+    let mut out = Vec::new();
+    for p in order {
+        if out.len() >= max {
+            break;
+        }
+        let name = s.ctx.poses[p].name.clone();
+        if used.contains(&stem(&name)) {
+            continue;
+        }
+        used.push(stem(&name));
+        let mesh = mesh_at(s, Some((p, 0)), 1.0);
+        let mut focus = vec![false; s.model.nverts()];
+        for &(v, f) in &s.ev.bad_in_pose[p] {
+            if f & F_INTERSECT != 0 {
+                focus[v as usize] = true;
+            }
+        }
+        // A stray flag far from the bend does not widen the crop.
+        let pts: Vec<Vec3> = (0..focus.len()).filter(|&v| focus[v]).map(|v| mesh[v]).collect();
+        let med = |k: usize| {
+            let mut c: Vec<f64> = pts.iter().map(|q| q[k]).collect();
+            c.sort_by(|a, b| a.total_cmp(b));
+            c[c.len() / 2]
+        };
+        let centre = v3(med(0), med(1), med(2));
+        let near: Vec<bool> = (0..focus.len()).map(|v| focus[v] && (mesh[v] - centre).len() <= 0.25 * s.model.scale).collect();
+        if near.iter().any(|f| *f) {
+            focus = near;
+        }
+        let total = focus.iter().filter(|f| **f).count().max(1);
+        let axis = hinge(s, p);
+        let mut views: Vec<(View, String)> =
+            ZOOM_VIEWS.iter().map(|&(y, pt, n)| (View { yaw_deg: y, pitch_deg: pt }, n.to_string())).collect();
+        if let Some(a) = axis {
+            let tilt = 20f64.to_radians().tan();
+            for (sign, end) in [(1.0, "ONE END"), (-1.0, "OTHER END")] {
+                for (lean, how) in [
+                    (None, ""),
+                    (Some(v3(0.0, 0.0, 1.0)), ", TILTED TO THE FRONT"),
+                    (Some(v3(0.0, 1.0, 0.0)), ", TILTED UP"),
+                    (Some(v3(0.0, -1.0, 0.0)), ", TILTED DOWN"),
+                ] {
+                    let b = a * sign;
+                    let b = match lean {
+                        Some(l) => {
+                            let side = l - b * l.dot(b);
+                            if side.len2() < 1e-9 {
+                                continue;
+                            }
+                            b + side.normalized() * tilt
+                        }
+                        None => b,
+                    };
+                    views.push((view_toward(b), format!("ALONG THE HINGE FROM {end}{how}")));
+                }
+            }
+        }
+        let scored: Vec<(f64, f64, View, Fit, String)> = views
+            .into_iter()
+            .filter_map(|(view, name)| {
+                let fits = zoom_fits(&view, [&rest, &rest], [&mesh, &mesh], [&focus, &focus], o.cell_w, o.cell_h, PROBE_MIN)?;
+                let half = Fit { ppu: fits[0].ppu * 0.5, ..fits[0] };
+                let seen = visible(&mesh, &s.model.tris, &focus, &view, half, o.cell_w / 2, o.cell_h / 2) as f64 / total as f64;
+                let along = axis.map_or(0.0, |a| view_dir(&view).dot(a).abs());
+                Some((seen, along, view, fits[0], name))
+            })
+            .collect();
+        let top = scored.iter().map(|c| c.0).fold(0.0, f64::max);
+        let pick = scored
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.0 >= 0.8 * top)
+            .max_by(|(i, a), (k, b)| a.1.total_cmp(&b.1).then(a.0.total_cmp(&b.0)).then(k.cmp(i)))
+            .map(|(_, c)| c);
+        let (view, fit, view_name) = match pick {
+            Some((_, _, v, f, n)) => (*v, *f, n.clone()),
+            None => (View::default(), fit(&View::default(), &[&mesh], o.cell_w, o.cell_h), ZOOM_VIEWS[0].2.to_string()),
+        };
+        let depth = crate::poke::deepest(s.model, &mesh, &s.ctx.segs[p], s.ctx.th.intersect_sep * s.model.scale);
+        let bad = masked_pose_bad(s.ev, s.info.mask)[p];
+        let st = edge_stretch(s.model, s.ctx, &mesh);
+        let mut top3 = st;
+        top3.sort_by(|a, b| b.total_cmp(a));
+        let stretch = top3.get(2).copied().unwrap_or(1.0);
+        out.push(PokeCase { case: ProbeCase { pose: p, name, stretch, bad, view, fit }, pokes: counts[p], depth, view: view_name });
+    }
+    out
+}
+
 /// A case's two-second loop: the rig alone in clay, from rest into the
 /// pose and back, with only the case's number on it. Nothing is marked and
 /// nothing says what the checker thinks. `sink(frame, image)`.

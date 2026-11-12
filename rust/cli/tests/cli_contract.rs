@@ -75,6 +75,36 @@ fn exit_codes_and_outputs() {
 }
 
 #[test]
+fn probe_by_intersect() {
+    let d = tmp("probe_intersect");
+    assert_eq!(run(&["fixture", "clean", "--out", d.to_str().unwrap()]).0, 0);
+    let glb = d.join("mannequin_clean.glb");
+    let out_dir = d.join("pokes");
+    let args =
+        ["probe", glb.to_str().unwrap(), "--out", out_dir.to_str().unwrap(), "--by", "intersect", "--max", "2", "--number-from", "3"];
+    let (code, out, err) = run(&args);
+    assert_eq!(code, 0, "{out}{err}");
+    let cases: Vec<serde_json::Value> = out.lines().filter(|l| l.starts_with('{')).map(|l| serde_json::from_str(l).unwrap()).collect();
+    // The mannequin's 140-degree elbow and knee fold into themselves.
+    assert!(!cases.is_empty() && cases.len() <= 2, "{out}");
+    let stem = |c: &serde_json::Value| c["pose"].as_str().unwrap().trim_end_matches(".L").trim_end_matches(".R").to_string();
+    for (k, c) in cases.iter().enumerate() {
+        assert_eq!(c["case"], 3 + k as u64);
+        assert!(std::path::Path::new(c["file"].as_str().unwrap()).exists(), "{c}");
+        let (n, share, rig) =
+            (c["intersect"].as_u64().unwrap(), c["intersect_share"].as_f64().unwrap(), c["rig_pokes_share"].as_f64().unwrap());
+        assert!(n > 0 && share > 0.0 && share <= rig && rig <= 1.0, "{c}");
+        assert!(c["depth"].as_f64().unwrap() >= 0.0, "{c}");
+        assert!(c.get("stretch").is_none(), "{c}");
+    }
+    // Most pokes first, a pose and its twin once.
+    assert!(cases.windows(2).all(|w| w[0]["intersect"].as_u64() >= w[1]["intersect"].as_u64() && stem(&w[0]) != stem(&w[1])), "{out}");
+    assert_eq!(run(&["probe", glb.to_str().unwrap(), "--out", out_dir.to_str().unwrap(), "--by", "bend"]).0, 2);
+    assert_eq!(run(&["probe", glb.to_str().unwrap(), "--out", out_dir.to_str().unwrap(), "--max", "0"]).0, 2);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
 fn usage_errors_exit_2() {
     assert_eq!(run(&[]).0, 2);
     assert_eq!(run(&["frobnicate"]).0, 2);

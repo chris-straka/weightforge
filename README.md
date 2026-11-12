@@ -33,11 +33,28 @@ Pure Rust, permissive deps only (serde, serde_json, ron, png, rayon).
                                                     # which rig is better: worst poses first, close-ups in
                                                     # clay with the failing skin red, a loop for each pose
     weights probe   hero.glb --out cases/           # unmarked loops for a person to judge
+    weights probe   hero.glb --out cases/ --by intersect --max 3
+                                                    # the same, of where the body passes through itself
     weights dump    fixed.glb --out weights.json    # per-vertex weights for DCCs
     weights fixture all --out fixtures/             # test mannequins
 
 Exit codes: 0 clean (for fix: the output passes), 1 faults found, 2
 usage/IO error. `weights --help` has every flag.
+
+**probe** makes two-second clay loops with only a case number on them, so
+a person can call each pose fine or broken without being told what the
+checker thinks; its JSON lines hold the numbers to lay that against.
+`--by stretch` (default) spreads the cases over a range of skin stretch.
+`--by intersect` takes the poses with the most `intersect` vertices (body
+passing through body) and reports, per case, that count, its share of all
+vertices, the rig's share over every pose, and the deepest poke: from the
+flagged vertices the skin is followed while it stays under the surface of
+the part it enters (the part is the joint carrying the other triangle's
+weight; its outward side faces away from its bone), and the deepest
+vertex's distance to that surface over the part's limb radius (median
+rest distance of its vertices to its bone) is the depth: 0 touching, 1 a
+whole radius in. The camera is the most side-on view of the bend among
+those that see at least 80% as many flagged vertices as the best one.
 
 **check** poses the rig with a role-based humanoid set (Rigify `DEF-*`,
 Mixamo, Unreal, and plain bone names; elbows/knees to 140°), a generic

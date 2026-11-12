@@ -21,6 +21,7 @@ USAGE:
                   [--zoom [--rows N] [--label-a NAME] [--label-b NAME] [--clips DIR]]
                   [--poses-b rom_b.ron]
   weights probe   <in.glb> --out <dir> [--poses rom.ron] [--number-from N]
+                  [--by stretch|intersect] [--max N]
   weights dump    <in.glb> --out weights.json   (per-vertex joints/weights, for DCC import)
   weights fixture <fault|all> --out <dir>
 
@@ -48,6 +49,15 @@ PROBE:
   marked, no verdict), as <dir>/case_NN.mp4 (ffmpeg; else PNG frames).
   Prints one JSON line a case with the numbers the judgement is laid
   against. --number-from continues the numbering across rigs.
+  --by          what the cases are chosen by: stretch (default) or
+                intersect: the poses where the body passes through itself
+                most (a pose and its left/right twin once, the side with
+                more), framed on the flagged vertices from the view that
+                shows them, side-on to the bend when it can. Each JSON
+                line then has the pose's intersect vertices and their
+                share of all vertices, the rig's share over all poses, and
+                the deepest poke as a share of the entered limb's radius
+  --max         at most N cases (default 5 by stretch, 3 by intersect)
 
 FIX:
   Builds candidates (the input is always candidate 0), measures each one
@@ -103,6 +113,8 @@ const VALUED: &[&str] = &[
     "--label-b",
     "--clips",
     "--number-from",
+    "--by",
+    "--max",
 ];
 
 impl Args {
@@ -285,6 +297,22 @@ fn cmd_probe(a: &Args) -> ExitCode {
         Some(Ok(n)) => n,
         Some(Err(_)) => return fail("--number-from needs an integer"),
     };
+    let by_intersect = match a.get("--by") {
+        None | Some("stretch") => false,
+        Some("intersect") => true,
+        Some(other) => return fail(format!("--by must be stretch or intersect, not {other}")),
+    };
+    let max = match a.get("--max").map(|v| v.parse::<usize>()) {
+        None => {
+            if by_intersect {
+                3
+            } else {
+                5
+            }
+        }
+        Some(Ok(n)) if n > 0 => n,
+        _ => return fail("--max needs a positive integer"),
+    };
     let set = match load_poses(a) {
         Ok(s) => s,
         Err(e) => return fail(e),
@@ -309,26 +337,77 @@ fn cmd_probe(a: &Args) -> ExitCode {
     if let Err(e) = std::fs::create_dir_all(dir) {
         return fail(format!("{}: {e}", dir.display()));
     }
-    let cases = wf::render::probe_cases(&side, &o, &[1.8, 2.2, 2.6, 3.2, 4.5]);
+    if by_intersect {
+        return probe_pokes(&side, &o, dir, first, max);
+    }
+    let mut cases = wf::render::probe_cases(&side, &o, &[1.8, 2.2, 2.6, 3.2, 4.5]);
+    cases.truncate(max);
     for (k, c) in cases.iter().enumerate() {
         let n = first + k;
-        let frames = dir.join(format!("case_{n:02}"));
-        let mut err = None;
-        wf::render::probe_clip(&side, c, n, &o, |f, img| {
-            let res = std::fs::create_dir_all(&frames).and_then(|_| std::fs::write(frames.join(format!("{f:03}.png")), img.png_bytes()));
-            if let Err(e) = res {
-                err.get_or_insert(format!("{}: {e}", frames.display()));
-            }
-        });
-        if let Some(e) = err {
-            return fail(e);
-        }
-        let mp4 = dir.join(format!("case_{n:02}.mp4"));
-        let file = if encode_frames(&frames, &mp4) { mp4 } else { frames };
+        let file = match probe_file(&side, c, n, &o, dir) {
+            Ok(f) => f,
+            Err(e) => return fail(e),
+        };
         let stretch = (c.stretch * 100.0).round() / 100.0;
         println!(
             "{}",
             serde_json::json!({"case": n, "file": file.to_string_lossy(), "rig": rep.file, "pose": c.name, "stretch": stretch, "bad": c.bad, "score": rep.score})
+        );
+    }
+    ExitCode::SUCCESS
+}
+
+/// One case's loop as <dir>/case_NN.mp4 (its PNG frames when ffmpeg is
+/// missing); the path written.
+fn probe_file(
+    side: &wf::render::Side,
+    c: &wf::render::ProbeCase,
+    n: usize,
+    o: &wf::render::ZoomOpts,
+    dir: &Path,
+) -> Result<PathBuf, String> {
+    let frames = dir.join(format!("case_{n:02}"));
+    let mut err = None;
+    wf::render::probe_clip(side, c, n, o, |f, img| {
+        let res = std::fs::create_dir_all(&frames).and_then(|_| std::fs::write(frames.join(format!("{f:03}.png")), img.png_bytes()));
+        if let Err(e) = res {
+            err.get_or_insert(format!("{}: {e}", frames.display()));
+        }
+    });
+    if let Some(e) = err {
+        return Err(e);
+    }
+    let mp4 = dir.join(format!("case_{n:02}.mp4"));
+    Ok(if encode_frames(&frames, &mp4) { mp4 } else { frames })
+}
+
+/// `probe --by intersect`: the poses where the body passes through itself
+/// most, one loop and one JSON line each.
+fn probe_pokes(side: &wf::render::Side, o: &wf::render::ZoomOpts, dir: &Path, first: usize, max: usize) -> ExitCode {
+    let nv = side.model.nverts().max(1) as f64;
+    let rig_pokes = side.ev.flags.iter().filter(|f| **f & wf::metrics::F_INTERSECT != 0).count();
+    let r4 = |x: f64| (x * 10000.0).round() / 10000.0;
+    for (k, c) in wf::render::probe_pokes(side, o, max).iter().enumerate() {
+        let n = first + k;
+        let file = match probe_file(side, &c.case, n, o, dir) {
+            Ok(f) => f,
+            Err(e) => return fail(e),
+        };
+        let into = c.depth.into.map(|j| side.model.skel.names[j].clone());
+        println!(
+            "{}",
+            serde_json::json!({
+                "case": n,
+                "file": file.to_string_lossy(),
+                "rig": side.info.title,
+                "pose": c.case.name,
+                "intersect": c.pokes,
+                "intersect_share": r4(c.pokes as f64 / nv),
+                "rig_pokes_share": r4(rig_pokes as f64 / nv),
+                "depth": (c.depth.share * 100.0).round() / 100.0,
+                "depth_into": into,
+                "view": c.view,
+            })
         );
     }
     ExitCode::SUCCESS
@@ -676,7 +755,7 @@ fn flags_of(cmd: &str) -> Option<Vec<&'static str>> {
     let own: &[&str] = match cmd {
         "check" => &["--json", "--vertex-json"],
         "sheet" => &["--out", "--cols"],
-        "probe" => &["--out", "--number-from"],
+        "probe" => &["--out", "--number-from", "--by", "--max"],
         "compare" => &["--out", "--poses-b", "--rows", "--label-a", "--label-b", "--zoom", "--clips"],
         "fix" => &["--out", "--method", "--source", "--candidate", "--skintokens", "--all-regions", "--report", "--sheet"],
         "dump" | "fixture" => return Some(vec!["--out"]),

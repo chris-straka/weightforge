@@ -63,6 +63,14 @@ fn exit_codes_and_outputs() {
     let made: Vec<String> = std::fs::read_dir(&clips).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
     assert!(made.iter().any(|n| n.starts_with("01_")), "{made:?}");
     assert_eq!(run(&[&args[..], &["--clips", clips.to_str().unwrap()]].concat()).0, 2);
+    // Probe: numbered, unmarked loops and one JSON line a case.
+    let probe = d.join("probe");
+    let (code, out, _) = run(&["probe", bleed.to_str().unwrap(), "--out", probe.to_str().unwrap(), "--number-from", "7"]);
+    assert_eq!(code, 0, "{out}");
+    let cases: Vec<serde_json::Value> = out.lines().filter(|l| l.starts_with('{')).map(|l| serde_json::from_str(l).unwrap()).collect();
+    assert!(!cases.is_empty(), "{out}");
+    assert_eq!(cases[0]["case"], 7);
+    assert!(cases.iter().all(|c| c["stretch"].as_f64().unwrap() > 1.0 && std::path::Path::new(c["file"].as_str().unwrap()).exists()));
     let _ = std::fs::remove_dir_all(&d);
 }
 

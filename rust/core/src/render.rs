@@ -489,6 +489,10 @@ const BOX: [u8; 3] = [255, 214, 64];
 /// around it, never as a few triangles filling the cell.
 const ZOOM_MIN: f64 = 0.30;
 
+/// The smallest crop of a probe case: wider than a compare row's, since
+/// nothing is marked and the eye needs the whole joint to judge it.
+const PROBE_MIN: f64 = 0.5;
+
 /// Frames and rate of a row's loop (`compare_zoom_clips`): two seconds.
 pub const CLIP_FRAMES: usize = 60;
 pub const CLIP_FPS: usize = 30;
@@ -561,7 +565,7 @@ fn span(v: &mut [f64]) -> (f64, f64) {
 /// One crop for both rigs: the box around their failing vertices in this
 /// pose, in body units, padded and held to the cell's shape. None when
 /// neither has one.
-fn zoom_fits(view: &View, rest: [&[Vec3]; 2], mesh: [&[Vec3]; 2], flags: [&[bool]; 2], cw: usize, ch: usize) -> Option<[Fit; 2]> {
+fn zoom_fits(view: &View, rest: [&[Vec3]; 2], mesh: [&[Vec3]; 2], flags: [&[bool]; 2], cw: usize, ch: usize, min: f64) -> Option<[Fit; 2]> {
     let frames = [frame(view, rest[0]), frame(view, rest[1])];
     let (mut us, mut vs) = (Vec::new(), Vec::new());
     for k in 0..2 {
@@ -577,7 +581,7 @@ fn zoom_fits(view: &View, rest: [&[Vec3]; 2], mesh: [&[Vec3]; 2], flags: [&[bool
     let ((u0, u1), (v0, v1)) = (span(&mut us), span(&mut vs));
     let aspect = cw as f64 / ch as f64;
     let (bw, bh) = ((u1 - u0) * 1.4 + 0.06, (v1 - v0) * 1.4 + 0.06);
-    let hh = bh.max(bw / aspect).max(ZOOM_MIN);
+    let hh = bh.max(bw / aspect).max(min);
     let (uc, vc) = ((u0 + u1) * 0.5, (v0 + v1) * 0.5);
     Some(frames.map(|fr| Fit { cx: fr.cx + uc * fr.h, cy: fr.y0 + vc * fr.h, ppu: ch as f64 / (hh * fr.h) }))
 }
@@ -820,7 +824,8 @@ fn zoom_views(sides: [&Side; 2], o: &ZoomOpts) -> Vec<ZoomView> {
             let mut best: Option<(f64, View, &'static str, [Fit; 2])> = None;
             for &(yaw_deg, pitch_deg, name) in ZOOM_VIEWS {
                 let view = View { yaw_deg, pitch_deg };
-                let Some(fits) = zoom_fits(&view, [&rest[0], &rest[1]], [&mesh[0], &mesh[1]], [&flags[0], &flags[1]], o.cell_w, o.cell_h)
+                let Some(fits) =
+                    zoom_fits(&view, [&rest[0], &rest[1]], [&mesh[0], &mesh[1]], [&flags[0], &flags[1]], o.cell_w, o.cell_h, ZOOM_MIN)
                 else {
                     break;
                 };
@@ -1005,6 +1010,102 @@ pub fn compare_zoom_clips(a: &Side, b: &Side, o: &ZoomOpts, mut sink: impl FnMut
             }
             sink(r, &v.row.name, f, &img);
         }
+    }
+}
+
+// ---- Probe: unmarked loops of one rig, for a person to judge ----
+
+/// One case for a person to judge without being told the answer: a pose
+/// of one rig, close on where its skin stretches most.
+pub struct ProbeCase {
+    pub pose: usize,
+    pub name: String,
+    /// The third-largest vertex stretch in the pose (posed edge length
+    /// over rest): the stretch limit at which the pose starts to fail.
+    pub stretch: f64,
+    /// Vertices the gate fails in this pose as it stands.
+    pub bad: usize,
+    view: View,
+    fit: Fit,
+}
+
+/// Per vertex, the largest stretch among its edges in a posed mesh.
+fn edge_stretch(model: &Model, ctx: &Ctx, pos: &[Vec3]) -> Vec<f64> {
+    let mut out = vec![1.0f64; model.nverts()];
+    for (e, r0) in model.edges.iter().zip(&ctx.rest_edge) {
+        let (a, b) = (e[0] as usize, e[1] as usize);
+        let s = (pos[a] - pos[b]).len() / r0.max(1e-12);
+        out[a] = out[a].max(s);
+        out[b] = out[b].max(s);
+    }
+    out
+}
+
+/// Cases spread over a range of stretch, one pose for each of `targets`
+/// (the pose whose stretch is nearest; a pose and its left or right twin
+/// are used once), so a person's "fine" and "broken" can be laid against
+/// the number.
+pub fn probe_cases(s: &Side, o: &ZoomOpts, targets: &[f64]) -> Vec<ProbeCase> {
+    let bad = masked_pose_bad(s.ev, s.info.mask);
+    let rest = posed(s.model, s.ctx, None, s.w);
+    // (stretch, per-vertex stretch) for every pose.
+    let measured: Vec<(f64, Vec<f64>)> = (0..s.ctx.poses.len())
+        .map(|p| {
+            let st = edge_stretch(s.model, s.ctx, &mesh_at(s, Some((p, 0)), 1.0));
+            let mut top = st.clone();
+            top.sort_by(|a, b| b.total_cmp(a));
+            (top.get(2).copied().unwrap_or(1.0), st)
+        })
+        .collect();
+    let stem = |n: &str| n.trim_end_matches(".L").trim_end_matches(".R").to_string();
+    let mut used: Vec<String> = Vec::new();
+    let mut out = Vec::new();
+    for &t in targets {
+        let pick = (0..measured.len())
+            .filter(|&p| !used.contains(&stem(&s.ctx.poses[p].name)))
+            .min_by(|&a, &b| (measured[a].0 / t).ln().abs().total_cmp(&(measured[b].0 / t).ln().abs()).then(a.cmp(&b)));
+        let Some(p) = pick else { break };
+        // Too far from the target to stand for it.
+        if (measured[p].0 / t).ln().abs() > 0.25 {
+            continue;
+        }
+        used.push(stem(&s.ctx.poses[p].name));
+        let (peak, st) = &measured[p];
+        let focus: Vec<bool> = st.iter().map(|&x| x >= (0.75 * peak).max(1.3)).collect();
+        let mesh = mesh_at(s, Some((p, 0)), 1.0);
+        let total = focus.iter().filter(|f| **f).count().max(1);
+        let mut best: Option<(f64, View, Fit)> = None;
+        for &(yaw_deg, pitch_deg, _) in ZOOM_VIEWS {
+            let view = View { yaw_deg, pitch_deg };
+            let Some(fits) = zoom_fits(&view, [&rest, &rest], [&mesh, &mesh], [&focus, &focus], o.cell_w, o.cell_h, PROBE_MIN) else {
+                break;
+            };
+            let half = Fit { ppu: fits[0].ppu * 0.5, ..fits[0] };
+            let seen = visible(&mesh, &s.model.tris, &focus, &view, half, o.cell_w / 2, o.cell_h / 2) as f64 / total as f64;
+            if best.as_ref().is_none_or(|b| seen > b.0 + 0.05) {
+                best = Some((seen, view, fits[0]));
+            }
+        }
+        let (view, fit) = match best {
+            Some((_, v, f)) => (v, f),
+            None => (View::default(), fit(&View::default(), &[&mesh], o.cell_w, o.cell_h)),
+        };
+        out.push(ProbeCase { pose: p, name: s.ctx.poses[p].name.clone(), stretch: *peak, bad: bad[p], view, fit });
+    }
+    out
+}
+
+/// A case's two-second loop: the rig alone in clay, from rest into the
+/// pose and back, with only the case's number on it. Nothing is marked and
+/// nothing says what the checker thinks. `sink(frame, image)`.
+pub fn probe_clip(s: &Side, c: &ProbeCase, number: usize, o: &ZoomOpts, mut sink: impl FnMut(usize, &Image)) {
+    let face = vec![(CLAY, 0.0); s.model.tris.len()];
+    for f in 0..CLIP_FRAMES {
+        let mut img = Image::new(o.cell_w, ZROW + o.cell_h, BG);
+        img.text(12, 12, &format!("CASE {number:02}"), 5, FG);
+        let mesh = mesh_at(s, Some((c.pose, 0)), clip_phase(f));
+        zoom_cell(&mut img, 0, ZROW, o, s, &mesh, &face, &c.view, c.fit, "");
+        sink(f, &img);
     }
 }
 

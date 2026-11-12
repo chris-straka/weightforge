@@ -43,4 +43,16 @@ Gate: golden images on the fixture mannequin; sheet readable on a phone
     named differently; poses are matched by name, and a pose only one rig
     has is shown and said.
   - Tests: `rust/core/tests/compare_zoom.rs` and `render.rs`'s own.
+- `weights probe`: loops for a person to judge, so the pass line can be
+  set to their eye (added 2026-11-11: the gate's limits were tuned on the
+  test mannequin only, and no real rig has ever passed, the shipped hero
+  included). Up to five poses of one rig, the ones whose stretch is
+  nearest 1.8, 2.2, 2.6, 3.2 and 4.5 (the third-largest vertex stretch in
+  the pose: the limit at which it starts to fail; a pose and its left or
+  right twin are used once). Each is a two-second loop from rest into the
+  pose and back, clay, framed on the stretched area but never tighter
+  than half a body height, with only "CASE NN" on it: nothing marked, no
+  verdict. One JSON line a case (rig, pose, stretch, failing vertices) is
+  the key the person's "fine" or "broken" is laid against.
+  `--number-from` continues the numbers across rigs.
 - Font: own 5×7 bitmap glyphs (uppercase), no third-party font data.

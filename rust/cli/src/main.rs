@@ -20,6 +20,7 @@ USAGE:
   weights compare <a.glb> <b.glb> --out ab.png [--poses rom.ron]
                   [--zoom [--rows N] [--label-a NAME] [--label-b NAME] [--clips DIR]]
                   [--poses-b rom_b.ron]
+  weights probe   <in.glb> --out <dir> [--poses rom.ron] [--number-from N]
   weights dump    <in.glb> --out weights.json   (per-vertex joints/weights, for DCC import)
   weights fixture <fault|all> --out <dir>
 
@@ -39,6 +40,14 @@ COMPARE:
   --label-a/-b  what to call each rig on the sheet (default A and B)
   --poses-b     the second rig's own pose set, when its bones are named
                 differently (poses are matched by name)
+
+PROBE:
+  Loops for a person to judge, so the pass line can be set to their eye:
+  up to five poses of the rig spread over a range of stretch, each a
+  two-second close-up in clay with only a case number on it (nothing
+  marked, no verdict), as <dir>/case_NN.mp4 (ffmpeg; else PNG frames).
+  Prints one JSON line a case with the numbers the judgement is laid
+  against. --number-from continues the numbering across rigs.
 
 FIX:
   Builds candidates (the input is always candidate 0), measures each one
@@ -93,6 +102,7 @@ const VALUED: &[&str] = &[
     "--label-a",
     "--label-b",
     "--clips",
+    "--number-from",
 ];
 
 impl Args {
@@ -236,6 +246,94 @@ fn cmd_sheet(a: &Args) -> ExitCode {
     if rep.pass { ExitCode::SUCCESS } else { ExitCode::from(1) }
 }
 
+fn ffmpeg(args: &[&str]) -> bool {
+    std::process::Command::new("ffmpeg").args(["-y", "-loglevel", "error"]).args(args).status().map(|s| s.success()).unwrap_or(false)
+}
+
+/// A directory of NNN.png frames into an mp4; the frames are removed once
+/// it is written. False when ffmpeg is missing or fails.
+fn encode_frames(frames: &Path, mp4: &Path) -> bool {
+    let fps = wf::render::CLIP_FPS.to_string();
+    let pattern = frames.join("%03d.png");
+    let ok = ffmpeg(&[
+        "-framerate",
+        &fps,
+        "-i",
+        &pattern.to_string_lossy(),
+        "-c:v",
+        "libx264",
+        "-pix_fmt",
+        "yuv420p",
+        "-crf",
+        "18",
+        "-movflags",
+        "+faststart",
+        &mp4.to_string_lossy(),
+    ]);
+    if ok {
+        let _ = std::fs::remove_dir_all(frames);
+    }
+    ok
+}
+
+/// Loops of one rig for a person to judge (see PROBE in the usage).
+fn cmd_probe(a: &Args) -> ExitCode {
+    let Some(input) = a.pos.get(1) else { return fail("probe needs an input .glb") };
+    let Some(dir) = a.get("--out").map(Path::new) else { return fail("probe needs --out <dir>") };
+    let first = match a.get("--number-from").map(|v| v.parse::<usize>()) {
+        None => 1,
+        Some(Ok(n)) => n,
+        Some(Err(_)) => return fail("--number-from needs an integer"),
+    };
+    let set = match load_poses(a) {
+        Ok(s) => s,
+        Err(e) => return fail(e),
+    };
+    let opts = match ctx_opts(a, set.as_ref()) {
+        Ok(o) => o,
+        Err(e) => return fail(e),
+    };
+    let (model, ctx, ev, rep) = match wf::check(Path::new(input), &opts) {
+        Ok(x) => x,
+        Err(e) => return fail(e),
+    };
+    let mask = wf::report::finding_mask(&ctx, &ev, &rep);
+    let side = wf::render::Side {
+        model: &model,
+        ctx: &ctx,
+        ev: &ev,
+        w: &model.weights,
+        info: wf::render::SheetInfo { title: &rep.file, mask: &mask, score: rep.score, pass: rep.pass, fails: fails(&rep) },
+    };
+    let o = wf::render::ZoomOpts { cell_w: 720, cell_h: 560, ..Default::default() };
+    if let Err(e) = std::fs::create_dir_all(dir) {
+        return fail(format!("{}: {e}", dir.display()));
+    }
+    let cases = wf::render::probe_cases(&side, &o, &[1.8, 2.2, 2.6, 3.2, 4.5]);
+    for (k, c) in cases.iter().enumerate() {
+        let n = first + k;
+        let frames = dir.join(format!("case_{n:02}"));
+        let mut err = None;
+        wf::render::probe_clip(&side, c, n, &o, |f, img| {
+            let res = std::fs::create_dir_all(&frames).and_then(|_| std::fs::write(frames.join(format!("{f:03}.png")), img.png_bytes()));
+            if let Err(e) = res {
+                err.get_or_insert(format!("{}: {e}", frames.display()));
+            }
+        });
+        if let Some(e) = err {
+            return fail(e);
+        }
+        let mp4 = dir.join(format!("case_{n:02}.mp4"));
+        let file = if encode_frames(&frames, &mp4) { mp4 } else { frames };
+        let stretch = (c.stretch * 100.0).round() / 100.0;
+        println!(
+            "{}",
+            serde_json::json!({"case": n, "file": file.to_string_lossy(), "rig": rep.file, "pose": c.name, "stretch": stretch, "bad": c.bad, "score": rep.score})
+        );
+    }
+    ExitCode::SUCCESS
+}
+
 /// `compare --zoom --clips`: each row's loop as PNG frames, then as an
 /// mp4 when ffmpeg is there (the frames are removed once it is written),
 /// and a reel of every loop played twice.
@@ -258,30 +356,10 @@ fn write_clips(dir: &Path, sa: &wf::render::Side, sb: &wf::render::Side, o: &wf:
     if let Some(e) = err {
         return Err(e);
     }
-    let ffmpeg = |args: &[&str]| {
-        std::process::Command::new("ffmpeg").args(["-y", "-loglevel", "error"]).args(args).status().map(|s| s.success()).unwrap_or(false)
-    };
-    let fps = wf::render::CLIP_FPS.to_string();
     let mut made = Vec::new();
     for row in &rows {
         let (frames, mp4) = (dir.join(row), dir.join(format!("{row}.mp4")));
-        let pattern = frames.join("%03d.png");
-        if ffmpeg(&[
-            "-framerate",
-            &fps,
-            "-i",
-            &pattern.to_string_lossy(),
-            "-c:v",
-            "libx264",
-            "-pix_fmt",
-            "yuv420p",
-            "-crf",
-            "18",
-            "-movflags",
-            "+faststart",
-            &mp4.to_string_lossy(),
-        ]) {
-            let _ = std::fs::remove_dir_all(&frames);
+        if encode_frames(&frames, &mp4) {
             println!("{}", mp4.display());
             made.push(format!("{row}.mp4"));
         } else {
@@ -610,6 +688,7 @@ fn main() -> ExitCode {
         "fix" => cmd_fix(&a),
         "sheet" => cmd_sheet(&a),
         "compare" => cmd_compare(&a),
+        "probe" => cmd_probe(&a),
         "dump" => cmd_dump(&a),
         "fixture" => cmd_fixture(&a),
         other => fail(format!("unknown command {other} (try --help)")),

@@ -32,6 +32,7 @@ Pure Rust, permissive deps only (serde, serde_json, ron, png, rayon).
     weights compare a.glb b.glb --out ab.png --zoom --label-a THEIRS --label-b OURS --clips clips/
                                                     # which rig is better: worst poses first, close-ups in
                                                     # clay with the failing skin red, a loop for each pose
+    weights probe   hero.glb --out cases/           # unmarked loops for a person to judge
     weights dump    fixed.glb --out weights.json    # per-vertex weights for DCCs
     weights fixture all --out fixtures/             # test mannequins
 

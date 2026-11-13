@@ -901,7 +901,8 @@ fn fix_once(file: &str, model: &Model, ctx: &Ctx, o: &FixOpts) -> FixResult {
     let mut cands: Vec<Candidate> = Vec::new();
     // Candidates are scored as they will be applied: only on the active
     // area (seam-blended), the input everywhere else.
-    let push = |name: String, w: Weights, cands: &mut Vec<Candidate>| {
+    let push = |name: String, mut w: Weights, cands: &mut Vec<Candidate>| {
+        model.lock_rigid(&mut w);
         let local = if cands.is_empty() {
             w.clone()
         } else {

@@ -733,7 +733,7 @@ fn evaluate_inner(model: &Model, ctx: &Ctx, w: &Weights, intersect: bool, only: 
         energy[v] += 0.5 * pose_max[v];
     }
     let bleed: Vec<Option<(u32, f64, f64)>> =
-        (0..nv).into_par_iter().map(|v| if mask[v] { bleed_of(ctx, model, w, v) } else { None }).collect();
+        (0..nv).into_par_iter().map(|v| if mask[v] && !model.rigid[v] { bleed_of(ctx, model, w, v) } else { None }).collect();
     // Speckle is judged on how vertices move: a helper's weight counts as
     // its share of the driver plus the rest on the helper's parent, so the
     // clean edge of a helper band is not noise.

@@ -73,10 +73,15 @@ pub struct Pose {
 }
 
 pub const HUMANOID_RON: &str = include_str!("../../../poses/humanoid.ron");
+pub const QUADRUPED_RON: &str = include_str!("../../../poses/quadruped.ron");
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub enum SkelClass {
     Humanoid,
+    Quadruped,
+    /// Legs, but not two-and-upright or four (a spider, a bird, a biped
+    /// with a level spine).
+    Legged,
     Custom,
 }
 
@@ -84,6 +89,8 @@ impl SkelClass {
     pub fn as_str(self) -> &'static str {
         match self {
             SkelClass::Humanoid => "humanoid",
+            SkelClass::Quadruped => "quadruped",
+            SkelClass::Legged => "legged",
             SkelClass::Custom => "custom",
         }
     }
@@ -214,9 +221,17 @@ fn rigify_spine(body: &str) -> Option<&'static str> {
     })
 }
 
-/// Role -> joints (shallowest first). Multi-bone roles: `spine*` (the
-/// chain above the hips), `fingers.L/R`.
+/// Role -> joints, from the skeleton's structure (`anatomy.rs`).
+/// Multi-bone roles: `spine*` (the chain above the hips to the chest),
+/// `neck`, `fingers.L/R`, `tail*`.
 pub fn resolve_roles(sk: &Skeleton) -> BTreeMap<String, Vec<usize>> {
+    sk.anatomy.roles.clone()
+}
+
+/// The roles bone names alone would give (the checker's rule before
+/// 2026-11-13: substring matches, `ring` in an eye-ring bone made it a
+/// finger). Kept to compare against, never to pose by.
+pub fn name_roles(sk: &Skeleton) -> BTreeMap<String, Vec<usize>> {
     let mut roles: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     let posable = |j: usize| crate::helpers::helper_of(sk, j).is_none();
     // The numbered Rigify spine names its neck and head by position; a
@@ -260,9 +275,12 @@ pub fn resolve_roles(sk: &Skeleton) -> BTreeMap<String, Vec<usize>> {
 }
 
 pub fn classify(sk: &Skeleton) -> SkelClass {
-    let r = resolve_roles(sk);
-    let need = ["upper_arm.L", "upper_arm.R", "forearm.L", "forearm.R", "thigh.L", "thigh.R", "shin.L", "shin.R"];
-    if need.iter().filter(|k| r.contains_key(**k)).count() >= 6 { SkelClass::Humanoid } else { SkelClass::Custom }
+    match sk.anatomy.body {
+        crate::anatomy::Body::Humanoid => SkelClass::Humanoid,
+        crate::anatomy::Body::Quadruped => SkelClass::Quadruped,
+        crate::anatomy::Body::Legged => SkelClass::Legged,
+        crate::anatomy::Body::Other => SkelClass::Custom,
+    }
 }
 
 // ---------------------------------------------------------------- resolve
@@ -333,6 +351,8 @@ pub fn resolve_report(set: &PoseSet, sk: &Skeleton) -> (Vec<Pose>, Vec<String>) 
     let roles = resolve_roles(sk);
     let (up, fwd) = match &set.frame {
         Some(f) => (v3(f.up.0, f.up.1, f.up.2).normalized(), v3(f.forward.0, f.forward.1, f.forward.2).normalized()),
+        // The facing the anatomy read from the feet (+Z when they say nothing).
+        None if sk.anatomy.forward.len2() > 0.0 => (v3(0.0, 1.0, 0.0), sk.anatomy.forward),
         None => (v3(0.0, 1.0, 0.0), v3(0.0, 0.0, 1.0)),
     };
     let basis = Basis { up, fwd, left: up.cross(fwd).normalized() };
@@ -541,6 +561,34 @@ pub fn clip_poses(model: &Model, per_clip: usize) -> Vec<Pose> {
     out
 }
 
+/// Poses for a legged body that is neither a humanoid nor a quadruped:
+/// each leg swings forward, back and up from its first joint and bends at
+/// its middle one (`anatomy.rs` names them `leg<k>_upper.S`,
+/// `leg<k>_lower.S`).
+pub fn legged_set(sk: &Skeleton) -> PoseSet {
+    let mut poses = Vec::new();
+    for role in sk.anatomy.roles.keys() {
+        let Some(base) = role.strip_suffix("_upper.L").or_else(|| role.strip_suffix("_upper.R")) else { continue };
+        let side = &role[role.len() - 1..];
+        for (tag, d, a) in [("forward", Dir::Forward, 30.0), ("back", Dir::Back, 30.0), ("up", Dir::Up, 25.0)] {
+            poses.push(PoseSpec {
+                name: format!("{base}_{tag}.{side}"),
+                mirror: false,
+                moves: vec![Move { bone: role.clone(), motion: Motion::Bend(d, a) }],
+            });
+        }
+        let lower = format!("{base}_lower.{side}");
+        if sk.anatomy.roles.contains_key(&lower) {
+            poses.push(PoseSpec {
+                name: format!("{base}_bend.{side}"),
+                mirror: false,
+                moves: vec![Move { bone: lower, motion: Motion::Bend(Dir::In, 40.0) }],
+            });
+        }
+    }
+    PoseSet { name: "legged".into(), frame: None, poses }
+}
+
 /// The default pose set for a model: the class preset (or a user file),
 /// plus samples of the asset's own clips. Also the poses of the set that
 /// could not run on this skeleton, one line each.
@@ -549,6 +597,16 @@ pub fn default_poses(model: &Model, user: Option<&PoseSet>, clips: bool) -> (Ske
     let (mut poses, skipped) = match (user, class) {
         (Some(set), _) => resolve_report(set, &model.skel),
         (None, SkelClass::Humanoid) => resolve_report(&parse_pose_set(HUMANOID_RON).expect("built-in humanoid.ron"), &model.skel),
+        (None, SkelClass::Quadruped) => resolve_report(&parse_pose_set(QUADRUPED_RON).expect("built-in quadruped.ron"), &model.skel),
+        (None, SkelClass::Legged) => {
+            let (mut p, s) = resolve_report(&legged_set(&model.skel), &model.skel);
+            // Bones on no leg (a body, a tail, a neck) still bend.
+            let legs: Vec<usize> =
+                model.skel.anatomy.roles.iter().filter(|(k, _)| k.starts_with("leg")).flat_map(|(_, v)| v.clone()).collect();
+            let on_leg = |j: usize| legs.iter().any(|&l| model.skel.anatomy.group[j] == model.skel.anatomy.group[l]);
+            p.extend(generic(model).into_iter().filter(|g| g.moves.iter().all(|m| !on_leg(m.0))));
+            (p, s)
+        }
         (None, SkelClass::Custom) => (generic(model), Vec::new()),
     };
     if clips {

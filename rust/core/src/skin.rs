@@ -63,12 +63,18 @@ pub fn joint_matrices(model: &Model, pose: &Pose) -> Vec<Mat4> {
         }
         let mut g = vec![Mat4::IDENTITY; nodes.len()];
         let mut d = vec![Quat::IDENTITY; nodes.len()];
-        for &i in &sk.order {
+        for &i in sk.posing_order() {
             let l = nodes[i].local();
             let (mut gi, mut di) = match nodes[i].parent {
                 Some(p) => (g[p] * l, d[p]),
                 None => (l, Quat::IDENTITY),
             };
+            // A joint the file left without its parent joint moves with
+            // the joint it hangs from (`Skeleton::link_flat`).
+            if let Some(vp) = sk.vlink_parent_node(i) {
+                gi = g[vp] * sk.rest_global[vp].inverse() * gi;
+                di = d[vp] * di;
+            }
             for &(axis, ang) in &node_moves[i] {
                 let r = Quat::from_axis_angle(di.rotate(axis), ang);
                 let h = gi.translation();

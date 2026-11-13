@@ -420,7 +420,7 @@ fn normals(pos: &[Vec3], tris: &[[u32; 3]]) -> Vec<Vec3> {
 
 /// Bone rest frames: +Y along the bone (Blender's convention), roll from
 /// the world axis least aligned with it.
-fn bone_frame(b: &Bone) -> Quat {
+pub fn bone_frame(b: &Bone) -> Quat {
     let y = (b.tail - b.head).normalized();
     let refv = if y.dot(v3(0.0, 0.0, 1.0)).abs() < 0.9 { v3(0.0, 0.0, 1.0) } else { v3(1.0, 0.0, 0.0) };
     let x = y.cross(refv).normalized();
@@ -429,13 +429,20 @@ fn bone_frame(b: &Bone) -> Quat {
 }
 
 pub fn to_glb(f: &Fixture) -> Glb {
+    to_glb_framed(f, &|_, b| bone_frame(b))
+}
+
+/// `to_glb` with each bone's rest orientation chosen by `frame(index,
+/// bone)` (`bone_frame` runs +Y along the bone, Blender's way; the
+/// identity is a rig that ignores that convention).
+pub fn to_glb_framed(f: &Fixture, frame: &dyn Fn(usize, &Bone) -> Quat) -> Glb {
     let mut glb = Glb {
         json: json!({"asset": {"version": "2.0", "generator": "weightforge fixtures"}, "buffers": [{"byteLength": 0}]}),
         bin: Vec::new(),
         json_raw: None,
     };
     let nb = f.bones.len();
-    let globals: Vec<Mat4> = f.bones.iter().map(|b| Mat4::from_trs(b.head, bone_frame(b), v3(1.0, 1.0, 1.0))).collect();
+    let globals: Vec<Mat4> = f.bones.iter().enumerate().map(|(i, b)| Mat4::from_trs(b.head, frame(i, b), v3(1.0, 1.0, 1.0))).collect();
     let mut nodes = Vec::new();
     for (i, b) in f.bones.iter().enumerate() {
         let local = match b.parent {

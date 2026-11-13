@@ -90,11 +90,10 @@ fn a_torn_neck_fails_in_a_head_pose() {
     assert_eq!(at_head(&clean), 0, "{:#?}", clean.findings);
 }
 
-/// A pose that cannot run says so: with no bone the checker can call a
-/// neck or a head, the four head poses are listed as not tested (they
-/// used to vanish from the report).
+/// Names play no part: a neck and head named like nothing the checker
+/// knows still get the head poses (the structure says where they are).
 #[test]
-fn a_pose_that_cannot_run_is_reported() {
+fn renamed_neck_and_head_still_get_the_head_poses() {
     let mut f = fixtures::build("clean");
     for b in f.bones.iter_mut() {
         b.name = match b.name {
@@ -104,21 +103,26 @@ fn a_pose_that_cannot_run_is_reported() {
         };
     }
     let rep = check(&model(&f));
-    let head: Vec<&String> = rep.skipped_poses.iter().filter(|s| s.starts_with("head_")).collect();
-    assert_eq!(
-        head,
-        [
-            "head_turn.L: no bone for neck, head",
-            "head_turn.R: no bone for neck, head",
-            "head_nod: no bone for neck, head",
-            "head_back: no bone for neck, head",
-        ]
-    );
-    assert!(weightforge_core::report::text(&rep).contains("pose not tested: head_nod: no bone for neck, head"));
-    // The mannequin has no finger bones: the finger curls were never
-    // tested either, and now say so.
-    assert!(rep.skipped_poses.contains(&"finger_curl.L: no bone for fingers.L".to_string()), "{:?}", rep.skipped_poses);
-    // The standard names leave no head pose out.
-    let named = check(&model(&standard(fixtures::build("clean"))));
-    assert!(!named.skipped_poses.iter().any(|s| s.starts_with("head_")), "{:?}", named.skipped_poses);
+    assert!(rep.skipped_poses.iter().all(|s| !s.starts_with("head_")), "{:?}", rep.skipped_poses);
+    let m = model(&f);
+    let poses = resolve(&parse_pose_set(HUMANOID_RON).unwrap(), &m.skel);
+    let nod = poses.iter().find(|p| p.name == "head_nod").unwrap();
+    assert_eq!(moved(&m, nod), ["DEF-jaw_base", "DEF-cranium"]);
+}
+
+/// A pose that cannot run says so: a humanoid has no tail, so a set that
+/// wags one lists the pose as not tested (it used to vanish).
+#[test]
+fn a_pose_that_cannot_run_is_reported() {
+    let m = model(&fixtures::build("clean"));
+    let set = parse_pose_set(
+        r#"PoseSet(name: "t", poses: [
+            PoseSpec(name: "wag", moves: [Move(bone: "tail*", motion: Bend(Left, 30))]),
+            PoseSpec(name: "nod", moves: [Move(bone: "head", motion: Bend(Forward, 20))]),
+        ])"#,
+    )
+    .unwrap();
+    let (poses, skipped) = weightforge_core::poses::resolve_report(&set, &m.skel);
+    assert_eq!(poses.len(), 1);
+    assert_eq!(skipped, ["wag: no bone for tail*"]);
 }

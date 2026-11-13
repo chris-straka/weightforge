@@ -1,0 +1,71 @@
+// weightforge quadruped range-of-motion set.
+//
+// Roles come from the skeleton's structure (anatomy.rs): hind legs are
+// thigh / shin / foot, front legs upper_arm / forearm / hand, then
+// spine* (hips to chest), neck, head, tail*. Angles are a trot and a
+// stretch, not a contortion.
+PoseSet(
+    name: "quadruped",
+    poses: [
+        PoseSpec(name: "hind_forward", mirror: true, moves: [
+            Move(bone: "thigh.L", motion: Bend(Forward, 35)),
+        ]),
+        PoseSpec(name: "hind_back", mirror: true, moves: [
+            Move(bone: "thigh.L", motion: Bend(Back, 30)),
+        ]),
+        PoseSpec(name: "hind_out", mirror: true, moves: [
+            Move(bone: "thigh.L", motion: Bend(Out, 20)),
+        ]),
+        PoseSpec(name: "stifle", mirror: true, moves: [
+            Move(bone: "shin.L", motion: Bend(Back, 40)),
+        ]),
+        PoseSpec(name: "hock", mirror: true, moves: [
+            Move(bone: "foot.L", motion: Bend(Back, 40)),
+        ]),
+        PoseSpec(name: "fore_forward", mirror: true, moves: [
+            Move(bone: "upper_arm.L", motion: Bend(Forward, 40)),
+        ]),
+        PoseSpec(name: "fore_back", mirror: true, moves: [
+            Move(bone: "upper_arm.L", motion: Bend(Back, 30)),
+        ]),
+        PoseSpec(name: "fore_out", mirror: true, moves: [
+            Move(bone: "upper_arm.L", motion: Bend(Out, 20)),
+        ]),
+        PoseSpec(name: "fore_knee", mirror: true, moves: [
+            Move(bone: "forearm.L", motion: Bend(Back, 60)),
+        ]),
+        PoseSpec(name: "fore_fetlock", mirror: true, moves: [
+            Move(bone: "hand.L", motion: Bend(Back, 40)),
+        ]),
+        PoseSpec(name: "back_arch", moves: [
+            Move(bone: "spine*", motion: Bend(Up, 20)),
+        ]),
+        PoseSpec(name: "back_sag", moves: [
+            Move(bone: "spine*", motion: Bend(Down, 20)),
+        ]),
+        PoseSpec(name: "back_side", mirror: true, moves: [
+            Move(bone: "spine*", motion: Bend(Left, 25)),
+        ]),
+        PoseSpec(name: "back_twist", moves: [
+            Move(bone: "spine*", motion: Twist(20)),
+        ]),
+        PoseSpec(name: "neck_up", moves: [
+            Move(bone: "neck", motion: Bend(Up, 30)),
+        ]),
+        PoseSpec(name: "neck_down", moves: [
+            Move(bone: "neck", motion: Bend(Down, 35)),
+        ]),
+        PoseSpec(name: "neck_side", mirror: true, moves: [
+            Move(bone: "neck", motion: Bend(Left, 35)),
+        ]),
+        PoseSpec(name: "head_turn", mirror: true, moves: [
+            Move(bone: "head", motion: Twist(30)),
+        ]),
+        PoseSpec(name: "tail_side", mirror: true, moves: [
+            Move(bone: "tail*", motion: Bend(Left, 45)),
+        ]),
+        PoseSpec(name: "tail_up", moves: [
+            Move(bone: "tail*", motion: Bend(Up, 40)),
+        ]),
+    ],
+)

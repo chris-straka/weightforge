@@ -374,6 +374,7 @@ fn deform_bones(model: &Model) -> Vec<bool> {
 pub fn cleanup(model: &Model, ctx: &Ctx, ev: &Eval, smooth_tears: bool) -> Weights {
     use crate::metrics::{F_INTERSECT, F_NOISE};
     let th = &ctx.th;
+    let deform = deform_bones(model);
     let w: Weights = (0..model.nverts())
         .into_par_iter()
         .map(|v| {
@@ -381,7 +382,10 @@ pub fn cleanup(model: &Model, ctx: &Ctx, ev: &Eval, smooth_tears: bool) -> Weigh
             let Some(near) = ctx.geo.nearest(v) else { return vw.clone() };
             let kept: VW =
                 vw.iter().copied().filter(|&(j, _)| ((ctx.geo.dist(v, j) - near.1) as f64) <= th.bleed_excess * model.scale).collect();
-            let kept = if kept.is_empty() { vec![(near.0, 1.0)] } else { kept };
+            // All of it bleed: the nearest bone that deforms (an unweighted
+            // end or IK bone can be nearest; review 2026-11-13).
+            let fallback = ctx.geo.near[v].iter().find(|e| deform[e.0 as usize]).map(|e| e.0).unwrap_or(near.0);
+            let kept = if kept.is_empty() { vec![(fallback, 1.0)] } else { kept };
             prune_vw(&normalize_vw(kept), 4, 0.01)
         })
         .collect();
@@ -533,10 +537,15 @@ pub fn joint_bands(model: &Model, ctx: &Ctx) -> Weights {
             let x = model.rest[v];
             let dir = (sk.tail[j] - sk.head[j]).normalized();
             // Joint at our head (with parent)?
+            // The band of the nearer end: on a bone shorter than its band
+            // (a spine segment), the head band used to take every vertex,
+            // leaving a step at the child (review 2026-11-13).
+            let len = (sk.tail[j] - sk.head[j]).len();
+            let has_child = sk.jchildren[j].iter().any(|&c| deform[c] && connected(c) == Some(j));
             if let Some(p) = connected(j) {
                 let bw = radius[j].max(radius[p]).max(1e-6);
                 let s = (x - sk.head[j]).dot(dir);
-                if s < bw {
+                if s < bw && (!has_child || s < 0.5 * len) {
                     let t = smoothstep((s + bw) / (2.0 * bw));
                     return normalize_vw(vec![(j as u32, t), (p as u32, 1.0 - t)]);
                 }
@@ -545,7 +554,7 @@ pub fn joint_bands(model: &Model, ctx: &Ctx) -> Weights {
             let child = sk.jchildren[j]
                 .iter()
                 .copied()
-                .filter(|&c| connected(c) == Some(j))
+                .filter(|&c| deform[c] && connected(c) == Some(j))
                 .min_by(|&a, &b| (sk.head[a] - x).len().partial_cmp(&(sk.head[b] - x).len()).unwrap().then(a.cmp(&b)));
             if let Some(c) = child {
                 let bw = radius[j].max(radius[c]).max(1e-6);
@@ -895,16 +904,36 @@ fn fix_once(file: &str, model: &Model, ctx: &Ctx, o: &FixOpts) -> FixResult {
         );
     }
     // Incremental trial scoring: only regions touching a changed vertex (or
-    // its one-ring) are re-evaluated; every other vertex keeps its cached
-    // energy. Exact, because a vertex's energy depends only on its own
-    // region and its neighbors.
+    // its one-ring), and pieces hanging on changed body triangles, are
+    // re-evaluated; every other vertex keeps its cached energy.
     let score_trial = |wt: &Weights, base: &Weights, base_v: &[f64]| -> (Vec<f64>, Vec<u8>, Vec<bool>) {
         let mut dirty_r = vec![false; ctx.regions.len()];
+        let mut changed = vec![false; model.nverts()];
+        let mut bones_changed = false;
         for v in 0..model.nverts() {
             if wt[v] != base[v] {
+                changed[v] = true;
                 dirty_r[ctx.vregion[v] as usize] = true;
                 for &u in &model.adj[v] {
                     dirty_r[ctx.vregion[u as usize] as usize] = true;
+                }
+                let bones = |w: &crate::scene::VW| w.iter().filter(|e| e.1 > 0.0).map(|e| e.0).collect::<std::collections::BTreeSet<u32>>();
+                bones_changed |= bones(&wt[v]) != bones(&base[v]);
+            }
+        }
+        // Not only neighbours: a piece hangs on body triangles it shares no
+        // edge with (its follow energy reads their weights), and which
+        // pieces use non-body bones depends on every body vertex (review
+        // 2026-11-13).
+        for &(pv, t, _, ok) in &ctx.piece_matches {
+            if ok && t.iter().any(|&i| changed[i as usize]) {
+                dirty_r[ctx.vregion[pv as usize] as usize] = true;
+            }
+        }
+        if bones_changed {
+            for (r, reg) in ctx.regions.iter().enumerate() {
+                if reg.piece {
+                    dirty_r[r] = true;
                 }
             }
         }

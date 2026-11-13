@@ -64,6 +64,7 @@ def main():
     ap.add_argument("--skintokens")
     ap.add_argument("--hero")
     ap.add_argument("--fix-args", default="")
+    ap.add_argument("--motionforge", help="standardize the pro rig first, as the route does (its weights on folded bones go to their ancestors); the standardized pro rig is the truth")
     ap.add_argument("--table", nargs="+")
     ap.add_argument("rigs", nargs="*")
     a = ap.parse_args()
@@ -73,6 +74,14 @@ def main():
     os.makedirs(inputs, exist_ok=True)
     for spec in a.rigs:
         rig, pro = spec.split("=", 1)
+        if a.motionforge:
+            std = os.path.join(inputs, f"{rig}.pro_std.glb")
+            if not os.path.exists(std):
+                code, err = run([a.motionforge, "standardize", "--input", pro, "--output", std])
+                if code != 0:
+                    print(f"{rig}: standardize failed: {err[-300:]}", flush=True)
+                    continue
+            pro = std
         st = os.path.join(inputs, f"{rig}.st.glb")
         if not os.path.exists(st):
             code, err = run([a.skintokens, "skin", pro, st, "--report", st + ".json"])

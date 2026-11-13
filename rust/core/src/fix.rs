@@ -588,6 +588,96 @@ pub fn joint_bands(model: &Model, ctx: &Ctx) -> Weights {
     prune_all(&pieces_from_body(model, ctx, &w))
 }
 
+/// One side's weights mirrored onto the other (`from_left`: the left
+/// side's onto the right), partner bones swapped: `.L` roles for `.R`
+/// roles, other bones by their mirrored head. A vertex takes the weights
+/// of the vertex nearest its reflection; the midline (within 1% of the
+/// height) keeps its own. Humanoids only (None otherwise). Averaging the
+/// two sides was tried 2026-11-11 and blurs two boundaries into a band
+/// that collapses; copying one keeps a boundary whole.
+pub fn mirror(model: &Model, from_left: bool) -> Option<Weights> {
+    let sk = &model.skel;
+    let a = &sk.anatomy;
+    if a.body != crate::anatomy::Body::Humanoid {
+        return None;
+    }
+    let left = a.up.cross(a.forward).normalized();
+    let c = sk.head[*a.roles.get("hips")?.first()?];
+    let refl = |p: Vec3| p - left * (2.0 * (p - c).dot(left));
+    let n = model.njoints();
+    let mut partner: Vec<u32> = (0..n as u32).collect();
+    for (r, js) in &a.roles {
+        if let Some(base) = r.strip_suffix(".L") {
+            if let Some(other) = a.roles.get(&format!("{base}.R")) {
+                for (i, &j) in js.iter().enumerate() {
+                    if let Some(&o) = other.get(i) {
+                        partner[j] = o as u32;
+                        partner[o] = j as u32;
+                    }
+                }
+            }
+        }
+    }
+    let in_role: std::collections::BTreeSet<usize> = a.roles.values().flatten().copied().collect();
+    for j in 0..n {
+        if in_role.contains(&j) {
+            continue;
+        }
+        let h = refl(sk.head[j]);
+        if let Some((k, d)) = (0..n).map(|k| (k, (sk.head[k] - h).len())).min_by(|x, y| x.1.total_cmp(&y.1).then(x.0.cmp(&y.0))) {
+            if d < 0.03 * model.scale {
+                partner[j] = k as u32;
+            }
+        }
+    }
+    let h = crate::owner::height(model);
+    let cell = model.scale * 0.01;
+    let key = |p: Vec3| ((p.x / cell).floor() as i64, (p.y / cell).floor() as i64, (p.z / cell).floor() as i64);
+    let mut grid: BTreeMap<(i64, i64, i64), Vec<usize>> = BTreeMap::new();
+    for (i, p) in model.rest.iter().enumerate() {
+        grid.entry(key(*p)).or_default().push(i);
+    }
+    let nearest = |p: Vec3| -> Option<usize> {
+        let k = key(p);
+        let mut best = (f64::MAX, usize::MAX);
+        for r in 0..3i64 {
+            for dx in -r..=r {
+                for dy in -r..=r {
+                    for dz in -r..=r {
+                        if dx.abs().max(dy.abs()).max(dz.abs()) != r {
+                            continue;
+                        }
+                        for &i in grid.get(&(k.0 + dx, k.1 + dy, k.2 + dz)).into_iter().flatten() {
+                            let d = (model.rest[i] - p).len();
+                            if d < best.0 || (d == best.0 && i < best.1) {
+                                best = (d, i);
+                            }
+                        }
+                    }
+                }
+            }
+            if best.1 != usize::MAX {
+                break;
+            }
+        }
+        (best.1 != usize::MAX && best.0 < 0.02 * model.scale).then_some(best.1)
+    };
+    let w: Weights = (0..model.nverts())
+        .map(|v| {
+            let lat = (model.rest[v] - c).dot(left);
+            let receives = if from_left { lat < -0.01 * h } else { lat > 0.01 * h };
+            if !receives || model.rigid[v] {
+                return model.weights[v].clone();
+            }
+            match nearest(refl(model.rest[v])) {
+                Some(u) => normalize_vw(model.weights[u].iter().map(|&(j, x)| (partner[j as usize], x)).collect()),
+                None => model.weights[v].clone(),
+            }
+        })
+        .collect();
+    Some(w)
+}
+
 /// Maps source joints onto target joints: by name; else by structural
 /// role (`anatomy.rs`: a Mixamo `LeftUpLeg` and a `DEF-thigh.L` are both
 /// `thigh.L`; chains by their place along the chain); else by nearest rest
@@ -1026,6 +1116,17 @@ fn fix_once(file: &str, model: &Model, ctx: &Ctx, o: &FixOpts) -> FixResult {
             Method::Smooth => {
                 push("despeckle".into(), cleanup(model, ctx, &ev0, false), &mut cands);
                 push("smooth".into(), cleanup(model, ctx, &ev0, true), &mut cands);
+                // One side's weights copied onto the other: generated
+                // weights are lopsided where the body is not (a crotch
+                // strip 64/23 between the thighs); the region pick and the
+                // headline choose the better side per region.
+                if o.headline_guard {
+                    for (name, from_left) in [("mirror-left", true), ("mirror-right", false)] {
+                        if let Some(w) = mirror(model, from_left) {
+                            push(name.into(), w, &mut cands);
+                        }
+                    }
+                }
             }
             Method::Geodesic => {
                 push("geodesic".into(), geodesic(model, ctx), &mut cands);

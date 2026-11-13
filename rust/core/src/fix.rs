@@ -63,11 +63,23 @@ pub struct FixOpts<'a> {
     /// Let regions without findings change too (default: fix only what
     /// the check flags).
     pub all_regions: bool,
+    /// Judge the result by the headline (`owner::guard`): regions where it
+    /// tears more skin than the input, on the poses or on `motion`'s clips,
+    /// keep the input's weights.
+    pub headline_guard: bool,
+    pub motion: Option<&'a Ctx>,
 }
 
 impl Default for FixOpts<'_> {
     fn default() -> Self {
-        FixOpts { methods: Method::parse("auto").unwrap(), source: None, external: Vec::new(), all_regions: false }
+        FixOpts {
+            methods: Method::parse("auto").unwrap(),
+            source: None,
+            external: Vec::new(),
+            all_regions: false,
+            headline_guard: true,
+            motion: None,
+        }
     }
 }
 
@@ -850,7 +862,14 @@ pub fn fix(file: &str, model: &Model, ctx: &Ctx, o: &FixOpts) -> FixResult {
     if o.external.is_empty() {
         return with;
     }
-    let plain = FixOpts { methods: o.methods.clone(), source: o.source, external: Vec::new(), all_regions: o.all_regions };
+    let plain = FixOpts {
+        methods: o.methods.clone(),
+        source: o.source,
+        external: Vec::new(),
+        all_regions: o.all_regions,
+        headline_guard: o.headline_guard,
+        motion: o.motion,
+    };
     let mut without = fix_once(file, model, ctx, &plain);
     let key = |r: &FixResult| (r.report_after.pass, r.report_after.score);
     if key(&without) > key(&with) {
@@ -1383,6 +1402,26 @@ fn fix_once(file: &str, model: &Model, ctx: &Ctx, o: &FixOpts) -> FixResult {
         Some(k) => k,
         None => (vec![0; nr], model.weights.clone(), evaluate(model, ctx, &model.weights), rep0.clone()),
     };
+    if o.headline_guard && w != model.weights {
+        let mut groups: Vec<(&Ctx, bool)> = vec![(ctx, false)];
+        if let Some(m) = o.motion {
+            groups.push((m, true));
+        }
+        let (wg, back) = crate::owner::guard(model, &groups, &model.weights, &w);
+        if wg != w {
+            if std::env::var_os("WF_DEBUG").is_some() {
+                eprintln!("headline guard: input weights back on {}", back.join(", "));
+            }
+            for r in 0..nr {
+                if (0..model.nverts()).any(|v| ctx.vregion[v] as usize == r && wg[v] != w[v]) {
+                    choice[r] = 0;
+                }
+            }
+            w = wg;
+            ev = evaluate(model, ctx, &w);
+            rep1 = build(file, model, ctx, &ev);
+        }
+    }
     if ranks_below(&rep1, &rep0) || new_fails(&rep1) {
         w = model.weights.clone();
         ev = ev0;

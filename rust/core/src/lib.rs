@@ -72,23 +72,7 @@ pub fn check_full(path: &Path, opts: &metrics::CtxOpts, spec: &MotionSpec) -> gl
     let ev = metrics::evaluate(&model, &ctx, &model.weights);
     let name = path.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
     let mut rep = report::build(&name, &model, &ctx, &ev);
-    let mut notes = Vec::new();
-    let mv = match &spec.source {
-        Some(src) => {
-            let sm = scene::Model::load(src)?;
-            let sname = src.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-            let names: Vec<String> = spec.clips.clone().unwrap_or_else(|| motion::GAME_CLIPS.iter().map(|s| s.to_string()).collect());
-            match motion::transfer(&sm, &sname, &model, &names, motion::FPS) {
-                Ok(m) => Some(m),
-                Err(e) => {
-                    notes.push(format!("clips from {sname} not played: {e}"));
-                    None
-                }
-            }
-        }
-        None if opts.clips => Some(motion::own(&model, motion::FPS, spec.clips.as_deref())).filter(|m| !m.poses.is_empty()),
-        None => None,
-    };
+    let (mv, mut notes) = motion_for(&model, opts.clips, spec)?;
     let mut motion_out = None;
     if let Some(m) = mv {
         notes.extend(m.skipped.iter().map(|s| format!("clip not played: {s}")));
@@ -103,4 +87,27 @@ pub fn check_full(path: &Path, opts: &metrics::CtxOpts, spec: &MotionSpec) -> gl
     rep.headline.push(sec);
     rep.anatomy.extend(notes);
     Ok(Checked { model, ctx, ev, rep, motion: motion_out })
+}
+
+/// The game's motion for a model (`MotionSpec`), and a note per thing that
+/// could not play.
+pub fn motion_for(model: &scene::Model, own_clips: bool, spec: &MotionSpec) -> glb::Result<(Option<motion::Motion>, Vec<String>)> {
+    let mut notes = Vec::new();
+    let mv = match &spec.source {
+        Some(src) => {
+            let sm = scene::Model::load(src)?;
+            let sname = src.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+            let names: Vec<String> = spec.clips.clone().unwrap_or_else(|| motion::GAME_CLIPS.iter().map(|s| s.to_string()).collect());
+            match motion::transfer(&sm, &sname, model, &names, motion::FPS) {
+                Ok(m) => Some(m),
+                Err(e) => {
+                    notes.push(format!("clips from {sname} not played: {e}"));
+                    None
+                }
+            }
+        }
+        None if own_clips => Some(motion::own(model, motion::FPS, spec.clips.as_deref())).filter(|m| !m.poses.is_empty()),
+        None => None,
+    };
+    Ok((mv, notes))
 }

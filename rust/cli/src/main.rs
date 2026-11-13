@@ -15,7 +15,8 @@ USAGE:
                   [--json] [--no-clips] [--voxels N] [--vertex-json flags.json]
   weights fix     <in.glb> --out <fixed.glb> [--method auto|smooth|geodesic|transfer|optimize]
                   [--source base.glb] [--candidate other.glb]... [--skintokens]
-                  [--all-regions] [--sheet before_after.png]
+                  [--all-regions] [--sheet before_after.png] [--motion hero.glb]
+                  [--motion-clips ...] [--no-headline-guard]
   weights show    <in.glb> --out <dir> [--motion hero.glb] [--motion-clips ...] [--kind K,...]
                   [--top N]   (a close-up sheet per headline finding)
   weights sheet   <in.glb> --out sheet.png [--poses rom.ron] [--cols N]
@@ -95,6 +96,11 @@ FIX:
                 ~/Games/_blender/skintokens/bin/skintokens; ~20 s on an M4).
                 Never trusted blindly: scored like every other candidate
   --all-regions also change regions the check did not flag
+  --motion      judge the result on this rig's clips too (as in check)
+  Headline guard (default on): regions where the result tears more skin
+  than the input (check's headline, on the poses and on --motion's clips)
+  keep the input's weights; if the whole still tears more, the input comes
+  back. --no-headline-guard turns it off (the score alone decides)
   --sheet       write an A/B compare sheet (input vs fixed)
 
 COMMON OPTIONS:
@@ -654,12 +660,29 @@ fn cmd_fix(a: &Args) -> ExitCode {
         }
     }
     let ctx = wf::metrics::Ctx::new(&model, &opts);
+    // The game's clips, for the headline guard.
+    let spec = wf::MotionSpec {
+        source: a.get("--motion").map(PathBuf::from),
+        clips: a.get("--motion-clips").map(|c| c.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()),
+    };
+    let motion_ctx = match wf::motion_for(&model, false, &spec) {
+        Ok((Some(m), _)) => Some(ctx.with_poses(&model, m.poses)),
+        Ok((None, notes)) => {
+            for n in notes {
+                eprintln!("weights: {n}");
+            }
+            None
+        }
+        Err(e) => return fail(format!("--motion: {e}")),
+    };
     let name = Path::new(input).file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
     let fo = wf::fix::FixOpts {
         methods,
         source: source.as_ref(),
         external: externals.iter().map(|(n, m)| (n.clone(), m)).collect(),
         all_regions: a.has("--all-regions"),
+        headline_guard: !a.has("--no-headline-guard"),
+        motion: motion_ctx.as_ref(),
     };
     let res = wf::fix::fix(&name, &model, &ctx, &fo);
     let glb = match as_read.as_ref().unwrap_or(&model).write_weights(&res.weights) {
@@ -786,7 +809,19 @@ fn flags_of(cmd: &str) -> Option<Vec<&'static str>> {
         "probe" => &["--out", "--number-from"],
         "show" => &["--out", "--motion", "--motion-clips", "--kind", "--top"],
         "compare" => &["--out", "--poses-b", "--rows", "--label-a", "--label-b", "--zoom", "--clips"],
-        "fix" => &["--out", "--method", "--source", "--candidate", "--skintokens", "--all-regions", "--report", "--sheet"],
+        "fix" => &[
+            "--out",
+            "--method",
+            "--source",
+            "--candidate",
+            "--skintokens",
+            "--all-regions",
+            "--report",
+            "--sheet",
+            "--motion",
+            "--motion-clips",
+            "--no-headline-guard",
+        ],
         "dump" | "fixture" => return Some(vec!["--out"]),
         _ => return None,
     };

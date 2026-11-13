@@ -904,3 +904,65 @@ mod tests {
         assert!(!words("Beltane_hair").iter().any(|w| stiff_word(w)));
     }
 }
+
+/// Vertices inside failing findings (limbs inside other parts aside) of
+/// one pose group under weights `w`.
+pub fn torn(model: &Model, ctx: &Ctx, w: &Weights, motion: bool) -> Vec<bool> {
+    let ev = crate::metrics::evaluate_with(model, ctx, w, false);
+    let rep = crate::report::build("guard", model, ctx, &ev);
+    let sec = assess(model, ctx, &ev, &rep, w, motion, "", Vec::new(), String::new());
+    let mut t = vec![false; model.nverts()];
+    for f in sec.findings.iter().filter(|f| f.severity == "fail" && f.kind != "limb_through") {
+        for &v in &f.vertices {
+            t[v as usize] = true;
+        }
+    }
+    t
+}
+
+/// A repair judged by what is seen: regions where `output` tears more
+/// skin than `input` (on any pose group: the poses, the game's clips) get
+/// the input's weights back, round after round; if the whole is still
+/// worse, the input comes back. Returns the weights and the regions put
+/// back.
+pub fn guard(model: &Model, groups: &[(&Ctx, bool)], input: &Weights, output: &Weights) -> (Weights, Vec<String>) {
+    let Some(&(rctx, _)) = groups.first() else { return (output.clone(), Vec::new()) };
+    let area = vertex_areas(model);
+    let k = BODY_M / height(model);
+    let nr = rctx.regions.len();
+    let per_region = |t: &[Vec<bool>]| -> Vec<f64> {
+        let mut a = vec![0.0; nr];
+        for v in 0..model.nverts() {
+            if t.iter().any(|x| x[v]) {
+                a[rctx.vregion[v] as usize] += area[v] * k * k * 1e4;
+            }
+        }
+        a
+    };
+    let tin: Vec<Vec<bool>> = groups.iter().map(|&(c, m)| torn(model, c, input, m)).collect();
+    let ain = per_region(&tin);
+    let mut cur = output.clone();
+    let mut back = vec![false; nr];
+    for _ in 0..6 {
+        let tc: Vec<Vec<bool>> = groups.iter().map(|&(c, m)| torn(model, c, &cur, m)).collect();
+        let ac = per_region(&tc);
+        let worse: Vec<usize> = (0..nr).filter(|&r| !back[r] && ac[r] > ain[r] + (0.1 * ain[r]).max(2.0)).collect();
+        if worse.is_empty() {
+            let total = |a: &[f64]| a.iter().sum::<f64>();
+            if total(&ac) > total(&ain) + 2.0 {
+                return (input.clone(), vec!["everything (the whole tore more than the input)".into()]);
+            }
+            break;
+        }
+        for &r in &worse {
+            back[r] = true;
+        }
+        for v in 0..model.nverts() {
+            if back[rctx.vregion[v] as usize] {
+                cur[v] = input[v].clone();
+            }
+        }
+    }
+    let names = (0..nr).filter(|&r| back[r]).map(|r| rctx.regions[r].label.clone()).collect();
+    (cur, names)
+}

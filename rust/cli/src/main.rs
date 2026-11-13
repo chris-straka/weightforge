@@ -24,6 +24,8 @@ USAGE:
                   [--zoom [--rows N] [--label-a NAME] [--label-b NAME] [--clips DIR]]
                   [--poses-b rom_b.ron]
   weights probe   <in.glb> --out <dir> [--poses rom.ron] [--number-from N]
+  weights closeness <pro.glb> <test.glb> [--motion hero.glb] [--json]
+                  (how close test's weights come to a pro rig's, same mesh and skeleton)
   weights dump    <in.glb> --out weights.json   (per-vertex joints/weights, for DCC import)
   weights fixture <fault|all> --out <dir>
 
@@ -44,6 +46,15 @@ CHECK:
   --motion-clips   which clips, comma-separated (default with --motion:
                    walk,run,attack_1,dodge,hit,death; without: all the
                    file's own)
+
+CLOSENESS:
+  The benchmark's main score: test.glb's weights against a professional
+  rig's (pro.glb, the same mesh and skeleton; joints by name, vertices by
+  index or nearest rest position). Motion: every vertex posed with both
+  through the poses and --motion's clips (default: pro.glb's own clips if
+  any), on a body 1.75 m tall: mean cm, 95th percentile cm of each
+  vertex's worst frame, and % of the skin ever more than 2 cm off.
+  Weights: mean half-L1 distance per vertex (0 same, 1 disjoint).
 
 SHOW:
   One PNG per headline finding, the largest first (--top, default 6;
@@ -317,6 +328,57 @@ fn encode_frames(frames: &Path, mp4: &Path) -> bool {
         let _ = std::fs::remove_dir_all(frames);
     }
     ok
+}
+
+/// How close a rig's weights come to a pro rig's (see CLOSENESS).
+fn cmd_closeness(a: &Args) -> ExitCode {
+    let (Some(pp), Some(tp)) = (a.pos.get(1), a.pos.get(2)) else { return fail("closeness needs <pro.glb> <test.glb>") };
+    let (pro, test) = match (wf::scene::Model::load(Path::new(pp)), wf::scene::Model::load(Path::new(tp))) {
+        (Ok(p), Ok(t)) => (p, t),
+        (Err(e), _) | (_, Err(e)) => return fail(e),
+    };
+    let set = match load_poses(a) {
+        Ok(s) => s,
+        Err(e) => return fail(e),
+    };
+    let opts = match ctx_opts(a, set.as_ref()) {
+        Ok(o) => wf::metrics::CtxOpts { clips: false, ..o },
+        Err(e) => return fail(e),
+    };
+    let ctx = wf::metrics::Ctx::new(&pro, &opts);
+    let spec = wf::MotionSpec {
+        source: a.get("--motion").map(PathBuf::from),
+        clips: a.get("--motion-clips").map(|c| c.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()),
+    };
+    let (mv, notes) = match wf::motion_for(&pro, true, &spec) {
+        Ok(x) => x,
+        Err(e) => return fail(e),
+    };
+    for n in notes {
+        eprintln!("weights: {n}");
+    }
+    let mctx = mv.map(|m| ctx.with_poses(&pro, m.poses));
+    let mut groups: Vec<(&str, &wf::metrics::Ctx)> = Vec::new();
+    if let Some(m) = &mctx {
+        groups.push(("game clips", m));
+    }
+    groups.push(("poses", &ctx));
+    let c = match wf::closeness::closeness(&pro, &test, &groups) {
+        Ok(c) => c,
+        Err(e) => return fail(e),
+    };
+    if a.has("--json") {
+        println!("{}", serde_json::to_string_pretty(&c).unwrap());
+    } else {
+        println!("{tp} against {pp}: weights {:.3} off (0 same, 1 disjoint)", c.weight_err);
+        for m in &c.motion {
+            println!(
+                "  {} ({} frames): {:.2} cm mean, {:.2} cm at the 95th percentile, {:.2}% of the skin ever over 2 cm off",
+                m.group, m.frames, m.mean_cm, m.p95_cm, m.off_pct
+            );
+        }
+    }
+    ExitCode::SUCCESS
 }
 
 /// A close-up sheet per headline finding (see SHOW in the usage).
@@ -808,6 +870,7 @@ fn flags_of(cmd: &str) -> Option<Vec<&'static str>> {
         "sheet" => &["--out", "--cols"],
         "probe" => &["--out", "--number-from"],
         "show" => &["--out", "--motion", "--motion-clips", "--kind", "--top"],
+        "closeness" => &["--json", "--motion", "--motion-clips"],
         "compare" => &["--out", "--poses-b", "--rows", "--label-a", "--label-b", "--zoom", "--clips"],
         "fix" => &[
             "--out",
@@ -855,6 +918,7 @@ fn main() -> ExitCode {
         "compare" => cmd_compare(&a),
         "probe" => cmd_probe(&a),
         "show" => cmd_show(&a),
+        "closeness" => cmd_closeness(&a),
         "dump" => cmd_dump(&a),
         "fixture" => cmd_fixture(&a),
         other => fail(format!("unknown command {other} (try --help)")),

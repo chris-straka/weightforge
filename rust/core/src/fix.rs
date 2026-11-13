@@ -389,7 +389,19 @@ pub fn cleanup(model: &Model, ctx: &Ctx, ev: &Eval, smooth_tears: bool) -> Weigh
     // componentwise median of its neighbors takes that median (two passes,
     // so a speckle next to a speckle is caught too). Clean vertices, steep
     // falloffs, and hard steps all sit on their neighbors' median.
-    let noisy_area = dilate(model, &ev.flags.iter().map(|&f| f & F_NOISE != 0).collect::<Vec<_>>(), 2);
+    // Seeds: the speckle that shows, and in a region where some does, the
+    // speckle that does not show yet (it shows once its neighbours are
+    // cleaned).
+    let mut shows_in = vec![false; ctx.regions.len()];
+    for v in 0..model.nverts() {
+        if ev.flags[v] & F_NOISE != 0 {
+            shows_in[ctx.vregion[v] as usize] = true;
+        }
+    }
+    let seeds: Vec<bool> = (0..model.nverts())
+        .map(|v| ev.flags[v] & F_NOISE != 0 || (shows_in[ctx.vregion[v] as usize] && ev.speckle.get(v).is_some_and(|&x| x > th.noise)))
+        .collect();
+    let noisy_area = dilate(model, &seeds, 2);
     // Worst outliers first and in sequence, so each median sees neighbors
     // that are already cleaned (a plain parallel median breaks down when
     // half the area is speckled).
@@ -865,6 +877,9 @@ fn fix_once(file: &str, model: &Model, ctx: &Ctx, o: &FixOpts) -> FixResult {
                 || mask[v] & !crate::metrics::F_INTERSECT != 0
                 || strained(v)
                 || (is_piece(model, v) && failing[ctx.vregion[v] as usize])
+                // Speckle that does not show yet beside speckle that does
+                // shows once its neighbours are cleaned.
+                || (failing[ctx.vregion[v] as usize] && ev0.speckle.get(v).is_some_and(|&x| x > ctx.th.noise))
         })
         .collect();
     // Isolated flags (a stray vertex or two) do not open an area for change.

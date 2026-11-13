@@ -58,6 +58,13 @@ pub struct Report {
     /// voxel fill (distances through the body) can be trusted.
     pub solid: crate::voxel::Solid,
     pub thresholds: Thresholds,
+    /// The headline (`owner.rs`): tears and what a person notices, on the
+    /// game's clips and on the poses. The score above is the older
+    /// measure, kept for comparison and for `fix`'s gate.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub headline: Vec<crate::owner::Section>,
+    /// What the body was read as and anything the reading could not find.
+    pub anatomy: Vec<String>,
 }
 
 pub fn energy_to_score(e: f64) -> f64 {
@@ -275,11 +282,20 @@ pub fn build(file: &str, model: &Model, ctx: &Ctx, ev: &Eval) -> Report {
         skipped_poses: ctx.skipped_poses.clone(),
         solid,
         thresholds: th.clone(),
+        headline: Vec::new(),
+        anatomy: std::iter::once(format!("body: {}", model.skel.anatomy.body.as_str()))
+            .chain(model.skel.anatomy.notes.iter().cloned())
+            .collect(),
     }
 }
 
 pub fn text(r: &Report) -> String {
     let mut s = String::new();
+    if !r.headline.is_empty() {
+        s += &format!("{} ({}, {} verts, {} bones)\n", r.file, r.class, r.verts, r.bones);
+        s += &crate::owner::text(&r.headline);
+        s += "older measure:\n";
+    }
     let verdict = if r.pass { "PASS" } else { "FAIL" };
     s += &format!("{verdict} {} score {:.1}/100 ({}, {} verts, {} bones, {} poses)\n", r.file, r.score, r.class, r.verts, r.bones, r.poses);
     for p in &r.skipped_poses {

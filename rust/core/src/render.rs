@@ -1215,3 +1215,149 @@ mod tests {
         assert!(h.starts_with("ABOUT EVEN"), "{h}");
     }
 }
+
+/// One finding of the headline (`owner.rs`) as a sheet a person can read
+/// at a glance: the whole body in the frame where it is worst, then a
+/// close-up of it there and at rest from the same camera, in the
+/// character's own paint with the finding's skin in red.
+pub fn finding_sheet(model: &Model, ctx: &Ctx, w: &Weights, f: &crate::owner::Finding, paint: &crate::paint::Paint, title: &str) -> Image {
+    let (pw, ph, side) = (460usize, 640usize, 360usize);
+    let top = 96usize;
+    let (iw, ih) = (side + 2 * pw + 40, top + ph + 44);
+    let mut img = Image::new(iw, ih, BG);
+    let posed = lbs(model, &ctx.mats[f.worst_pose.min(ctx.mats.len().saturating_sub(1))], w);
+    let mut is_f = vec![false; model.nverts()];
+    for &v in &f.vertices {
+        is_f[v as usize] = true;
+    }
+    let colors: Vec<[f64; 3]> = (0..model.nverts())
+        .map(|v| {
+            if is_f[v] {
+                return BAD;
+            }
+            let c = paint.rgb[v];
+            let l = 0.3 * c[0] as f64 + 0.59 * c[1] as f64 + 0.11 * c[2] as f64;
+            [
+                0.15 + 0.6 * (0.7 * c[0] as f64 + 0.3 * l),
+                0.15 + 0.6 * (0.7 * c[1] as f64 + 0.3 * l),
+                0.15 + 0.6 * (0.7 * c[2] as f64 + 0.3 * l),
+            ]
+        })
+        .collect();
+    // The camera that sees most of the finding (a hand inside the body is
+    // best seen from where the hand went in).
+    let view = best_view(&posed, &model.tris, &is_f);
+    // Whole body.
+    let full = fit(&view, &[&posed], side, ph);
+    draw_mesh(&mut img, 0, top, side, ph, &posed, &model.tris, &colors, &view, full);
+    // The crop: the finding's extent, doubled, square-ish to the panel.
+    let pts: Vec<Vec3> = f.vertices.iter().map(|&v| view.to_cam(posed[v as usize])).collect();
+    let (mut lo, mut hi) = (v3(f64::MAX, f64::MAX, 0.0), v3(f64::MIN, f64::MIN, 0.0));
+    for q in &pts {
+        lo = lo.min(*q);
+        hi = hi.max(*q);
+    }
+    let body_h = crate::owner::height(model);
+    let span = ((hi.x - lo.x).max(hi.y - lo.y) * 2.0).max(0.18 * body_h);
+    let (cx, cy) = (0.5 * (lo.x + hi.x), 0.5 * (lo.y + hi.y));
+    let ppu = (pw as f64 / span).min(ph as f64 / span);
+    let zoom = Fit { cx, cy, ppu };
+    draw_mesh(&mut img, side + 20, top, pw, ph, &posed, &model.tris, &colors, &view, zoom);
+    // The same crop at rest: rest positions moved so the finding's centre
+    // sits where it does posed.
+    let rc = f.vertices.iter().fold(Vec3::ZERO, |s, &v| s + model.rest[v as usize]) / f.vertices.len().max(1) as f64;
+    let pc = f.vertices.iter().fold(Vec3::ZERO, |s, &v| s + posed[v as usize]) / f.vertices.len().max(1) as f64;
+    let rest: Vec<Vec3> = model.rest.iter().map(|p| *p - rc + pc).collect();
+    draw_mesh(&mut img, side + pw + 40, top, pw, ph, &rest, &model.tris, &colors, &view, zoom);
+    // The crop's box on the whole body.
+    let to_px =
+        |x: f64, y: f64| (((x - full.cx) * full.ppu + side as f64 * 0.5), ((full.cy - y) * full.ppu + ph as f64 * 0.5 + top as f64));
+    let (bx0, by0) = to_px(cx - 0.5 * pw as f64 / ppu, cy + 0.5 * ph as f64 / ppu);
+    let (bx1, by1) = to_px(cx + 0.5 * pw as f64 / ppu, cy - 0.5 * ph as f64 / ppu);
+    let clampx = |x: f64| x.clamp(0.0, (side - 2) as f64) as usize;
+    let clampy = |y: f64| y.clamp(top as f64, (top + ph - 2) as f64) as usize;
+    let (x0, x1, y0, y1) = (clampx(bx0), clampx(bx1), clampy(by0), clampy(by1));
+    img.rect(x0, y0, x1.saturating_sub(x0).max(2), 2, FG);
+    img.rect(x0, y1, x1.saturating_sub(x0).max(2), 2, FG);
+    img.rect(x0, y0, 2, y1.saturating_sub(y0).max(2), FG);
+    img.rect(x1, y0, 2, y1.saturating_sub(y0).max(2), FG);
+    img.text(12, 12, &fit_text(&format!("{}: {}", f.kind.replace('_', " "), f.part), (iw - 24) / 18), 3, RED);
+    img.text(12, 44, &fit_text(&f.detail.replace('\u{b2}', "2"), (iw - 24) / 12), 2, FG);
+    img.text(
+        12,
+        70,
+        &fit_text(&format!("{:.0} cm2 of skin ({:.2}% of the surface), on a 1.75 m body", f.area_cm2, f.area_pct), (iw - 24) / 12),
+        2,
+        DIM,
+    );
+    img.text(side + 28, top + 8, &fit_text(&format!("in {}", f.worst), pw / 12), 2, FG);
+    img.text(side + pw + 48, top + 8, "at rest", 2, FG);
+    img.text(12, top + ph + 12, &fit_text(title, (iw - 24) / 12), 2, DIM);
+    img
+}
+
+/// Of 36 cameras round the body (12 headings, 3 heights), the one whose
+/// view shows the most pixels of the marked triangles' skin, over a
+/// small depth-tested raster.
+pub fn best_view(pos: &[Vec3], tris: &[[u32; 3]], marked: &[bool]) -> View {
+    let mark: Vec<bool> = tris.iter().map(|t| t.iter().any(|&i| marked[i as usize])).collect();
+    let mut best = (0usize, View::default());
+    for pitch in [10.0, 40.0, -25.0] {
+        for k in 0..12 {
+            let view = View { yaw_deg: k as f64 * 30.0, pitch_deg: pitch };
+            let cam: Vec<Vec3> = pos.iter().map(|p| view.to_cam(*p)).collect();
+            let (mut lo, mut hi) = (v3(f64::MAX, f64::MAX, 0.0), v3(f64::MIN, f64::MIN, 0.0));
+            for (t, m) in tris.iter().zip(&mark) {
+                if *m {
+                    for &i in t {
+                        lo = lo.min(cam[i as usize]);
+                        hi = hi.max(cam[i as usize]);
+                    }
+                }
+            }
+            let n = 96usize;
+            let span = (hi.x - lo.x).max(hi.y - lo.y).max(1e-9) * 2.0;
+            let (cx, cy) = (0.5 * (lo.x + hi.x), 0.5 * (lo.y + hi.y));
+            let sc = n as f64 / span;
+            let mut depth = vec![f64::NEG_INFINITY; n * n];
+            let mut owner = vec![false; n * n];
+            for (t, m) in tris.iter().zip(&mark) {
+                let p = t.map(|i| cam[i as usize]);
+                let q = p.map(|c| ((c.x - cx) * sc + n as f64 * 0.5, (cy - c.y) * sc + n as f64 * 0.5, c.z));
+                let area = (q[1].0 - q[0].0) * (q[2].1 - q[0].1) - (q[1].1 - q[0].1) * (q[2].0 - q[0].0);
+                if area.abs() < 1e-12 {
+                    continue;
+                }
+                let x0 = q.iter().map(|c| c.0).fold(f64::MAX, f64::min).floor().max(0.0) as usize;
+                let x1 = (q.iter().map(|c| c.0).fold(f64::MIN, f64::max).ceil() as isize).min(n as isize - 1);
+                let y0 = q.iter().map(|c| c.1).fold(f64::MAX, f64::min).floor().max(0.0) as usize;
+                let y1 = (q.iter().map(|c| c.1).fold(f64::MIN, f64::max).ceil() as isize).min(n as isize - 1);
+                if x1 < 0 || y1 < 0 {
+                    continue;
+                }
+                for py in y0..=y1 as usize {
+                    for px in x0..=x1 as usize {
+                        let (x, y) = (px as f64 + 0.5, py as f64 + 0.5);
+                        let w0 = ((q[1].0 - x) * (q[2].1 - y) - (q[1].1 - y) * (q[2].0 - x)) / area;
+                        let w1 = ((q[2].0 - x) * (q[0].1 - y) - (q[2].1 - y) * (q[0].0 - x)) / area;
+                        let w2 = 1.0 - w0 - w1;
+                        if w0 < 0.0 || w1 < 0.0 || w2 < 0.0 {
+                            continue;
+                        }
+                        let z = w0 * q[0].2 + w1 * q[1].2 + w2 * q[2].2;
+                        let i = py * n + px;
+                        if z > depth[i] {
+                            depth[i] = z;
+                            owner[i] = *m;
+                        }
+                    }
+                }
+            }
+            let seen = owner.iter().filter(|&&o| o).count();
+            if seen > best.0 {
+                best = (seen, view);
+            }
+        }
+    }
+    best.1
+}

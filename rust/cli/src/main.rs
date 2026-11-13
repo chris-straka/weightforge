@@ -11,11 +11,13 @@ const HELP: &str = "\
 weights — skin-weight QA and repair for rigged GLB characters
 
 USAGE:
-  weights check   <in.glb> [--poses rom.ron] [--json] [--no-clips] [--voxels N]
-                  [--vertex-json flags.json]
+  weights check   <in.glb> [--motion hero.glb] [--motion-clips walk,run,...] [--poses rom.ron]
+                  [--json] [--no-clips] [--voxels N] [--vertex-json flags.json]
   weights fix     <in.glb> --out <fixed.glb> [--method auto|smooth|geodesic|transfer|optimize]
                   [--source base.glb] [--candidate other.glb]... [--skintokens]
                   [--all-regions] [--sheet before_after.png]
+  weights show    <in.glb> --out <dir> [--motion hero.glb] [--motion-clips ...] [--kind K,...]
+                  [--top N]   (a close-up sheet per headline finding)
   weights sheet   <in.glb> --out sheet.png [--poses rom.ron] [--cols N]
   weights compare <a.glb> <b.glb> --out ab.png [--poses rom.ron]
                   [--zoom [--rows N] [--label-a NAME] [--label-b NAME] [--clips DIR]]
@@ -23,6 +25,32 @@ USAGE:
   weights probe   <in.glb> --out <dir> [--poses rom.ron] [--number-from N]
   weights dump    <in.glb> --out weights.json   (per-vertex joints/weights, for DCC import)
   weights fixture <fault|all> --out <dir>
+
+CHECK:
+  The headline is what a person watching the character notices, on the
+  game's clips and on the range-of-motion poses apart: tears (the share of
+  the surface inside failing findings) and each finding as an area, named
+  by part and side: cloth moving with a bone it doesn't belong to
+  (wrong_bone), a limb's surface not following the limb (not_following),
+  a stiff part (belt, buckle, pouch, plate) bending (stiff_bends), a limb
+  passing through another (limb_through; a warning in the poses, whose full
+  bends poke), stretch past 3.5x, collapse, bleed, visible speckle. Amounts
+  are for a body 1.75 m tall. The 0-100 score follows as the older measure.
+  Bone roles come from the skeleton's structure, not bone names.
+  --motion <glb>   play this rig's clips (the hero's file) on the checked rig,
+                   put on by bone role (nothing is written); default: the
+                   checked file's own clips, if any
+  --motion-clips   which clips, comma-separated (default with --motion:
+                   walk,run,attack_1,dodge,hit,death; without: all the
+                   file's own)
+
+SHOW:
+  One PNG per headline finding, the largest first (--top, default 6;
+  --kind keeps those kinds, e.g. wrong_bone,stiff_bends): the whole body
+  in the frame where it is worst, then a close-up of it there and at rest
+  from the same camera, in the character's paint, the finding in red.
+  Clip findings come first, then the poses'. Files: <dir>/NN_<kind>.png,
+  and <dir>/findings.json with what each one shows.
 
 COMPARE:
   --zoom        the sheet for judging two rigs at a glance: a headline
@@ -103,6 +131,10 @@ const VALUED: &[&str] = &[
     "--label-b",
     "--clips",
     "--number-from",
+    "--motion",
+    "--motion-clips",
+    "--kind",
+    "--top",
 ];
 
 impl Args {
@@ -172,10 +204,15 @@ fn cmd_check(a: &Args) -> ExitCode {
         Ok(o) => o,
         Err(e) => return fail(e),
     };
-    let (model, ctx, ev, rep) = match wf::check(Path::new(input), &opts) {
+    let spec = wf::MotionSpec {
+        source: a.get("--motion").map(PathBuf::from),
+        clips: a.get("--motion-clips").map(|c| c.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()),
+    };
+    let checked = match wf::check_full(Path::new(input), &opts, &spec) {
         Ok(x) => x,
         Err(e) => return fail(e),
     };
+    let wf::Checked { model, ctx, ev, rep, .. } = checked;
     if let Some(vj) = a.get("--vertex-json") {
         let mask = wf::report::finding_mask(&ctx, &ev, &rep);
         let meshes: Vec<serde_json::Value> = model
@@ -274,6 +311,61 @@ fn encode_frames(frames: &Path, mp4: &Path) -> bool {
         let _ = std::fs::remove_dir_all(frames);
     }
     ok
+}
+
+/// A close-up sheet per headline finding (see SHOW in the usage).
+fn cmd_show(a: &Args) -> ExitCode {
+    let Some(input) = a.pos.get(1) else { return fail("show needs an input .glb") };
+    let Some(dir) = a.get("--out").map(Path::new) else { return fail("show needs --out <dir>") };
+    let top = match a.get("--top").map(|v| v.parse::<usize>()) {
+        None => 6,
+        Some(Ok(n)) if n >= 1 => n,
+        Some(_) => return fail("--top needs a positive integer"),
+    };
+    let kinds: Option<Vec<String>> = a.get("--kind").map(|k| k.split(',').map(|s| s.trim().to_string()).collect());
+    let set = match load_poses(a) {
+        Ok(s) => s,
+        Err(e) => return fail(e),
+    };
+    let opts = match ctx_opts(a, set.as_ref()) {
+        Ok(o) => o,
+        Err(e) => return fail(e),
+    };
+    let spec = wf::MotionSpec {
+        source: a.get("--motion").map(PathBuf::from),
+        clips: a.get("--motion-clips").map(|c| c.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()),
+    };
+    let c = match wf::check_full(Path::new(input), &opts, &spec) {
+        Ok(x) => x,
+        Err(e) => return fail(e),
+    };
+    if let Err(e) = std::fs::create_dir_all(dir) {
+        return fail(format!("{}: {e}", dir.display()));
+    }
+    let paint = wf::paint::read(&c.model);
+    let mut picked: Vec<(&wf::metrics::Ctx, &wf::owner::Finding, String)> = Vec::new();
+    for sec in &c.rep.headline {
+        let ctx = if sec.name == "game clips" { c.motion.as_ref().map(|m| &m.0).unwrap_or(&c.ctx) } else { &c.ctx };
+        for f in &sec.findings {
+            if kinds.as_ref().is_none_or(|k| k.contains(&f.kind)) {
+                picked.push((ctx, f, sec.name.clone()));
+            }
+        }
+    }
+    picked.truncate(top);
+    let mut index = Vec::new();
+    for (i, (ctx, f, sec)) in picked.iter().enumerate() {
+        let title = format!("{} - {sec} - weights show", c.rep.file);
+        let img = wf::render::finding_sheet(&c.model, ctx, &c.model.weights, f, &paint, &title);
+        let path = dir.join(format!("{:02}_{}.png", i + 1, f.kind));
+        if let Err(e) = write_png(&path.to_string_lossy(), &img) {
+            return fail(e);
+        }
+        println!("{}", path.display());
+        index.push(serde_json::json!({"file": path.file_name().unwrap().to_string_lossy(), "section": sec, "finding": f}));
+    }
+    let _ = std::fs::write(dir.join("findings.json"), serde_json::to_string_pretty(&index).unwrap());
+    ExitCode::SUCCESS
 }
 
 /// Loops of one rig for a person to judge (see PROBE in the usage).
@@ -689,9 +781,10 @@ fn cmd_fixture(a: &Args) -> ExitCode {
 fn flags_of(cmd: &str) -> Option<Vec<&'static str>> {
     const CTX: [&str; 3] = ["--poses", "--no-clips", "--voxels"];
     let own: &[&str] = match cmd {
-        "check" => &["--json", "--vertex-json"],
+        "check" => &["--json", "--vertex-json", "--motion", "--motion-clips"],
         "sheet" => &["--out", "--cols"],
         "probe" => &["--out", "--number-from"],
+        "show" => &["--out", "--motion", "--motion-clips", "--kind", "--top"],
         "compare" => &["--out", "--poses-b", "--rows", "--label-a", "--label-b", "--zoom", "--clips"],
         "fix" => &["--out", "--method", "--source", "--candidate", "--skintokens", "--all-regions", "--report", "--sheet"],
         "dump" | "fixture" => return Some(vec!["--out"]),
@@ -726,6 +819,7 @@ fn main() -> ExitCode {
         "sheet" => cmd_sheet(&a),
         "compare" => cmd_compare(&a),
         "probe" => cmd_probe(&a),
+        "show" => cmd_show(&a),
         "dump" => cmd_dump(&a),
         "fixture" => cmd_fixture(&a),
         other => fail(format!("unknown command {other} (try --help)")),

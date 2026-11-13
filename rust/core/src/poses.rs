@@ -191,6 +191,11 @@ fn part_of(body: &str) -> Option<&'static str> {
     None
 }
 
+/// Joints above `j` in the skeleton.
+pub fn depth_of(sk: &Skeleton, j: usize) -> usize {
+    depth(sk, j)
+}
+
 fn depth(sk: &Skeleton, j: usize) -> usize {
     let mut d = 0;
     let mut p = sk.jparent[j];
@@ -490,6 +495,21 @@ pub fn generic(model: &Model) -> Vec<Pose> {
 
 /// Samples each animation clip at up to `per_clip` evenly spaced times.
 pub fn clip_poses(model: &Model, per_clip: usize) -> Vec<Pose> {
+    clip_sample(model, Sampling::Count(per_clip)).into_iter().flat_map(|c| c.1).collect()
+}
+
+/// Each animation clip, sampled every `1 / fps` seconds (its last key
+/// included): (clip name, its frames).
+pub fn clip_frames(model: &Model, fps: f64) -> Vec<(String, Vec<Pose>)> {
+    clip_sample(model, Sampling::Fps(fps))
+}
+
+enum Sampling {
+    Count(usize),
+    Fps(f64),
+}
+
+fn clip_sample(model: &Model, how: Sampling) -> Vec<(String, Vec<Pose>)> {
     let glb = &model.glb;
     let mut out = Vec::new();
     for (ai, anim) in glb.arr("animations").iter().enumerate() {
@@ -529,9 +549,22 @@ pub fn clip_poses(model: &Model, per_clip: usize) -> Vec<Pose> {
         if tracks.is_empty() {
             continue;
         }
-        let k = per_clip.max(1);
-        for s in 0..k {
-            let t = if k == 1 { t0 } else { t0 + (t1 - t0) * s as f64 / (k - 1) as f64 };
+        let times: Vec<f64> = match how {
+            Sampling::Count(k) => {
+                let k = k.max(1);
+                (0..k).map(|s| if k == 1 { t0 } else { t0 + (t1 - t0) * s as f64 / (k - 1) as f64 }).collect()
+            }
+            Sampling::Fps(fps) => {
+                let n = ((t1 - t0) * fps).floor() as usize;
+                let mut v: Vec<f64> = (0..=n).map(|i| t0 + i as f64 / fps).collect();
+                if t1 - v.last().copied().unwrap_or(t0) > 0.25 / fps {
+                    v.push(t1);
+                }
+                v
+            }
+        };
+        let mut frames = Vec::new();
+        for t in times {
             let mut locals: BTreeMap<usize, (Option<Vec3>, Option<Quat>, Option<Vec3>)> = BTreeMap::new();
             for (node, path, times, vals, nc, step) in &tracks {
                 let i = times.partition_point(|&x| x <= t).saturating_sub(1).min(times.len() - 1);
@@ -551,12 +584,13 @@ pub fn clip_poses(model: &Model, per_clip: usize) -> Vec<Pose> {
                     _ => {}
                 }
             }
-            out.push(Pose {
+            frames.push(Pose {
                 name: format!("{name}@{t:.2}s"),
                 moves: Vec::new(),
                 locals: locals.into_iter().map(|(n, (t, r, s))| (n, t, r, s)).collect(),
             });
         }
+        out.push((name, frames));
     }
     out
 }

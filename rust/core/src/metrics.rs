@@ -88,11 +88,13 @@ pub struct Region {
     pub piece: bool,
 }
 
+#[derive(Clone)]
 pub struct Ctx {
     pub class: SkelClass,
     pub poses: Vec<Pose>,
     pub mats: Vec<Vec<Mat4>>,
-    pub geo: Geo,
+    /// Shared by every pose group of one check (`with_poses`).
+    pub geo: std::sync::Arc<Geo>,
     pub regions: Vec<Region>,
     pub vregion: Vec<u32>,
     pub rest_edge: Vec<f64>,
@@ -148,7 +150,7 @@ impl Ctx {
     pub fn new(model: &Model, o: &CtxOpts) -> Ctx {
         let (class, poses, skipped_poses) = default_poses(model, o.poses, o.clips);
         let mats: Vec<Vec<Mat4>> = poses.par_iter().map(|p| joint_matrices(model, p)).collect();
-        let geo = geodesics(model, o.voxel_res, &anchor_joints(model));
+        let geo = std::sync::Arc::new(geodesics(model, o.voxel_res, &anchor_joints(model)));
         let sk = &model.skel;
         let segs = mats
             .iter()
@@ -236,6 +238,21 @@ impl Ctx {
     }
 }
 
+impl Ctx {
+    /// The same check on other poses (the game's clips beside the range of
+    /// motion): regions, distances through the body and matches are
+    /// shared, only the poses change.
+    pub fn with_poses(&self, model: &Model, poses: Vec<Pose>) -> Ctx {
+        let mats: Vec<Vec<Mat4>> = poses.par_iter().map(|p| joint_matrices(model, p)).collect();
+        let sk = &model.skel;
+        let segs = mats
+            .iter()
+            .map(|m| (0..model.njoints()).map(|j| (m[j].transform_point(sk.head[j]), m[j].transform_point(sk.tail[j]))).collect())
+            .collect();
+        Ctx { poses, mats, segs, skipped_poses: Vec::new(), ..self.clone() }
+    }
+}
+
 /// Joints a vertex can belong to: all but the unweighted roots above the
 /// body (Unreal/MPFB `root`, an armature node), which sit at the floor or
 /// the origin. Counting those as a vertex's nearest bone puts the crotch in
@@ -291,6 +308,8 @@ pub struct Eval {
     pub piece_bones: Vec<(String, Vec<String>)>,
     pub max_stretch: Vec<f64>,
     pub min_thin: Vec<f64>,
+    /// Speckle score per vertex (`noise_of`), shown or not.
+    pub speckle: Vec<f64>,
 }
 
 /// Speckle score: high only when a vertex disagrees with its neighbors
@@ -804,6 +823,7 @@ fn evaluate_inner(model: &Model, ctx: &Ctx, w: &Weights, intersect: bool, only: 
         piece_bones: pb.into_iter().map(|(a, b, _)| (a, b)).collect(),
         max_stretch,
         min_thin,
+        speckle: noise,
     }
 }
 
@@ -841,11 +861,21 @@ fn tri_tri(a: [Vec3; 3], b: [Vec3; 3]) -> bool {
 /// whose rest centroids are farther apart than `sep` (so the natural fold
 /// inside a bent elbow does not count).
 pub fn self_intersections(model: &Model, posed: &[Vec3], sep: f64) -> Vec<bool> {
-    let nv = model.nverts();
-    let mut hit = vec![false; nv];
+    let mut hit = vec![false; model.nverts()];
+    for (a, b) in intersect_pairs(model, posed, sep) {
+        for &x in model.tris[a as usize].iter().chain(model.tris[b as usize].iter()) {
+            hit[x as usize] = true;
+        }
+    }
+    hit
+}
+
+/// The triangle pairs behind `self_intersections`.
+pub fn intersect_pairs(model: &Model, posed: &[Vec3], sep: f64) -> Vec<(u32, u32)> {
     let tris = &model.tris;
+    let mut out = Vec::new();
     if tris.is_empty() {
-        return hit;
+        return out;
     }
     let mean_edge = {
         let mut s = 0.0;
@@ -896,12 +926,10 @@ pub fn self_intersections(model: &Model, posed: &[Vec3], sep: f64) -> Vec<bool> 
                 let pa = ta.map(|x| posed[x as usize]);
                 let pb = tb.map(|x| posed[x as usize]);
                 if tri_tri(pa, pb) && !tri_tri(ta.map(|x| model.rest[x as usize]), tb.map(|x| model.rest[x as usize])) {
-                    for &x in ta.iter().chain(tb.iter()) {
-                        hit[x as usize] = true;
-                    }
+                    out.push((a.min(b) as u32, a.max(b) as u32));
                 }
             }
         }
     }
-    hit
+    out
 }

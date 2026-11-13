@@ -27,7 +27,9 @@ fn exit_codes_and_outputs() {
     let bleed = d.join("mannequin_bleed.glb");
     let (c, out, _) = run(&["check", clean.to_str().unwrap()]);
     assert_eq!(c, 0, "{out}");
-    assert!(out.starts_with("PASS"));
+    // The headline first (tears on the poses), the older verdict after.
+    assert!(out.starts_with("mannequin_clean.glb") && out.contains("poses (") && out.contains("torn"), "{out}");
+    assert!(out.lines().any(|l| l.starts_with("PASS")), "{out}");
     let (c, out, _) = run(&["check", bleed.to_str().unwrap(), "--json"]);
     assert_eq!(c, 1);
     let v: serde_json::Value = serde_json::from_str(&out).unwrap();

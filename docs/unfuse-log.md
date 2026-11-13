@@ -6,6 +6,52 @@ poses, and long coats drag with the legs. This is the log of the work on
 it (2026-11-12): what the fault is, every route tried, the numbers, and
 what was kept.
 
+## Where it stands
+
+**On by default: nothing new.** `motionforge/tools/tripo_rig.py` without
+flags makes the same rigs as before. `weights fix` on a file that
+records no cut does exactly what it did (its tests and goldens are
+unchanged). `meshkit/tools/unfuse.py` run by hand cuts legs only.
+
+**`tripo_rig.py --unfuse`** (off by default, humans only). For each seed
+it also makes a cut copy of the standardized rig: `unfuse.py` slits the
+lump that holds both thighs along the plane between the legs, from the
+hip joints down, walls each half, and records the cut in the file. The
+copy then goes through the same clips, `weights fix`, gate and contract
+as the uncut try (`try_s<seed>.cut.*`). On a cut file `weights fix`
+starts from each half following its own leg (`own_legs`) and has one
+more candidate (`limbs-apart`: that plus a falloff at the crotch). The
+cut copy is kept only when it ranks better than every other try
+(passing first, then the contract, fewer failing findings, score);
+`report.json` says which won (`best_cut`). On the 20 test rigs: tears
+median 0.27 % -> 0.00 %, 19 of 20 at or under 0.7 % (15 before), pokes
+median 10.9 % -> 11.5 %; the route keeps the cut on 15.
+
+**Sleeves: tried and dropped; nothing of it runs.** `unfuse.py --parts
+legs,arms` and `--labels`, and weightforge's `arm_cut_weights`,
+`sleeve_weights`, `coat_weights` and `examples/sleeves_try`, are in the
+tree but nothing calls them by default. Tears % on the three coat rigs
+(c11 the widest sleeves, h01 and c02 the open coat), legs only -> with
+the method:
+
+| method | c11 | h01 | c02 | when |
+|---|---|---|---|---|
+| one plane through all of an arm's joins, sides by outline | score 40.8 -> 19.0 | 55.9 -> 15.9 | 56.1 -> 13.6 | before the fixer (scores) |
+| each join on its own plane, weights outward from the cut | 2.46 -> 2.91 | 0.24 -> 0.54 | 0.55 -> 0.67 | before the fixer |
+| the same | 1.78 -> 2.60 | 0.17 -> 0.37 | | after the fixer |
+| re-weight, no cut: the sleeve follows the forearm | 2.46 -> 3.80 | 0.24 -> 0.56 | 0.55 -> 0.68 | before the fixer |
+| re-weight, no cut: the coat follows the body | 2.46 -> 4.32 | no change | no change | before the fixer |
+| cut along the sleeve's own edge round the cuff | 1.78 -> 2.60 | 0.17 -> 0.21 | 0.21 -> 0.21 | after the fixer |
+
+Rigs with free arms are untouched by the last four. Details under
+Tried, 4 to 6.
+
+**If sleeves are reopened, the one thing to try:** tell sleeve from coat
+by the model sheet (the sleeve's outline in the front and side
+pictures), because on the widest-sleeved coat nothing in the mesh, the
+rig or the paint does. The cheaper fix is at the source: a sheet drawn
+with the sleeves held clear of the coat.
+
 Test set: 20 rigs of the owner's corpus (16 `c01`-`c16`, one seed each;
 4 `h01`-`h04`, best of three seeds), about 7,500 triangles and 3,800
 welded vertices each, a little under a metre tall. Each starts as the

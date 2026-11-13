@@ -553,7 +553,29 @@ fn evaluate_inner(model: &Model, ctx: &Ctx, w: &Weights, intersect: bool, only: 
         thin: Vec<f64>,
         isect: Vec<bool>,
         follow: Vec<f64>,
+        /// Speckled vertices: how far each kinks off its neighbours in this
+        /// pose, in its mean edge lengths.
+        kink: Vec<(u32, f64)>,
     }
+    // Speckle is judged on how vertices move: a helper's weight counts as
+    // its share of the driver plus the rest on the helper's parent, so the
+    // clean edge of a helper band is not noise.
+    let weq = crate::helpers::equivalent(&model.skel, w);
+    let noise: Vec<f64> = (0..nv).into_par_iter().map(|v| if mask[v] { noise_of(model, &weq, v) } else { 0.0 }).collect();
+    // A speckle is a fault only where it shows: some pose kinks the vertex
+    // off its neighbours (a third of an edge or more). Weights that differ
+    // between bones moving together (a face rig at rest, a helper and its
+    // driver, a coarse mesh's one-edge blend) never do.
+    let speckled: Vec<u32> = (0..nv as u32).filter(|&v| noise[v as usize] > th.noise && !model.adj[v as usize].is_empty()).collect();
+    let lap_rest: Vec<(Vec3, f64)> = speckled
+        .iter()
+        .map(|&v| {
+            let n = &model.adj[v as usize];
+            let m = n.iter().fold(Vec3::ZERO, |a, &u| a + model.rest[u as usize]) / n.len() as f64;
+            let e = n.iter().map(|&u| (model.rest[u as usize] - model.rest[v as usize]).len()).sum::<f64>() / n.len() as f64;
+            (model.rest[v as usize] - m, e.max(1e-12))
+        })
+        .collect();
     // Attached piece vertices (close to the body, facing the same way) must
     // move like Data Transfer from the body would move them. Free-hanging
     // parts are an artistic choice; stretch and noise still cover them.
@@ -605,7 +627,18 @@ fn evaluate_inner(model: &Model, ctx: &Ctx, w: &Weights, intersect: bool, only: 
                     _ => 0.0,
                 })
                 .collect();
-            PoseOut { stretch, thin, isect, follow }
+            let kink: Vec<(u32, f64)> = speckled
+                .iter()
+                .zip(&lap_rest)
+                .map(|(&v, &(l0, e))| {
+                    let n = &model.adj[v as usize];
+                    let m = n.iter().fold(Vec3::ZERO, |a, &u| a + posed[u as usize]) / n.len() as f64;
+                    let j = w[v as usize].first().map(|x| x.0 as usize).unwrap_or(0);
+                    let r = ctx.mats[p][j].transform_vector(l0);
+                    (v, ((posed[v as usize] - m) - r).len() / e)
+                })
+                .collect();
+            PoseOut { stretch, thin, isect, follow, kink }
         })
         .collect();
 
@@ -732,24 +765,27 @@ fn evaluate_inner(model: &Model, ctx: &Ctx, w: &Weights, intersect: bool, only: 
     for &v in &verts {
         energy[v] += 0.5 * pose_max[v];
     }
+    let mut shows = vec![0.0f64; nv];
+    for po in &per_pose {
+        for &(v, k) in &po.kink {
+            shows[v as usize] = shows[v as usize].max(k);
+        }
+    }
+    let visible = |v: usize| shows[v] > 1.0 / 3.0;
     let bleed: Vec<Option<(u32, f64, f64)>> =
         (0..nv).into_par_iter().map(|v| if mask[v] && !model.rigid[v] { bleed_of(ctx, model, w, v) } else { None }).collect();
-    // Speckle is judged on how vertices move: a helper's weight counts as
-    // its share of the driver plus the rest on the helper's parent, so the
-    // clean edge of a helper band is not noise.
-    let weq = crate::helpers::equivalent(&model.skel, w);
-    let noise: Vec<f64> = (0..nv).into_par_iter().map(|v| if mask[v] { noise_of(model, &weq, v) } else { 0.0 }).collect();
     for &v in &verts {
         if bleed[v].is_some() {
             flags[v] |= F_BLEED;
         }
-        if noise[v] > th.noise {
+        if noise[v] > th.noise && visible(v) {
             flags[v] |= F_NOISE;
         }
         if w[v].is_empty() {
             flags[v] |= F_UNWEIGHTED;
         }
-        energy[v] += bleed_energy(ctx, model, w, v) + 2.0 * (noise[v] - 0.3).max(0.0) + if w[v].is_empty() { 1.0 } else { 0.0 };
+        let speckle = if visible(v) { 2.0 * (noise[v] - 0.3).max(0.0) } else { 0.0 };
+        energy[v] += bleed_energy(ctx, model, w, v) + speckle + if w[v].is_empty() { 1.0 } else { 0.0 };
     }
     let pb = piece_bones(model, w);
     for (_, _, pverts) in &pb {

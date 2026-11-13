@@ -22,7 +22,10 @@ Pure Rust, permissive deps only (serde, serde_json, ron, png, rayon).
 
 ## Use
 
-    weights check   hero.glb [--poses rom.ron] [--json] [--vertex-json f.json]
+    weights check   hero.glb [--motion game_hero.glb] [--motion-clips walk,run]
+                    [--poses rom.ron] [--json] [--vertex-json f.json]
+    weights show    hero.glb --out dir/ [--motion game_hero.glb] [--kind wrong_bone] [--top N]
+                                                    # a close-up sheet per headline finding
     weights sheet   hero.glb --out sheet.png        # ROM pose sheet, bad verts red
     weights fix     hero.glb --out fixed.glb --sheet ab.png
                     [--method auto|smooth,geodesic,transfer,optimize]
@@ -39,21 +42,38 @@ Pure Rust, permissive deps only (serde, serde_json, ron, png, rayon).
 Exit codes: 0 clean (for fix: the output passes), 1 faults found, 2
 usage/IO error. `weights --help` has every flag.
 
-**check** poses the rig with a role-based humanoid set (Rigify `DEF-*`,
-Mixamo, Unreal, and plain bone names; elbows/knees to 140°), a generic
-per-bone set for anything else, or your own `.ron` (see
-`poses/humanoid.ron`), plus samples of the asset's own clips. It reports
-per-region scores (0–100) and findings: `D_STRETCH`, `D_VOLUME`,
+**check** leads with what a person watching the character notices
+(since 2026-11-13; method and calibration in
+[`docs/rig-score.md`](docs/rig-score.md)), on the game's clips and on the
+range-of-motion poses apart: **tears** (the share of the surface inside
+failing findings) and each finding as an area named by part and side,
+with the frame where it is worst: `wrong_bone` (a part moving with a bone
+of another limb, or the torso with a forearm, hand, shin or foot),
+`not_following` (mid-limb skin held back by a bone off the limb),
+`stiff_bends` (a belt, buckle, pouch or plate bending), `limb_through`
+(a limb inside another part: reported beside the tears, as the clips
+cause it as often as the weights), `stretch` (past 3.5x), `volume`,
+`bleed`, `noise` (only speckle that shows in a pose). Amounts are for a
+body 1.75 m tall. The clips are the file's own (a rig animated by
+motionforge `animate` carries the game's), or `--motion hero.glb`'s put on
+the rig by bone role (measuring only; nothing is written). The 0-100 score
+follows as the older measure; JSON keeps `score`, `pass` and the findings
+below, and adds `headline` and `anatomy`.
+
+Bone roles come from the skeleton's structure, not names (`core/src/anatomy.rs`):
+feet are chains ending at the floor, legs climb from them, arms reach
+farthest to each side of the spine, the head owns the crown; sides come
+from position. Humanoids get `poses/humanoid.ron`, four-legged bodies
+`poses/quadruped.ron`, other legged bodies leg swings and bends, anything
+else per-bone bends. Every skin of the file is read; a mesh parented to a
+bone without a skin is checked riding it (never written); each bone's
+tail is decided on its own; a skeleton exported flat (deform bones
+without the bones joining them) gets links by position. Findings: `D_STRETCH`, `D_VOLUME`,
 `D_BLEED`, `D_NOISE`, `D_PIECE_FOLLOW`, `D_PIECE_BONES`, `D_UNWEIGHTED`
 (fail), `D_INTERSECT`, `D_SEAM`, `D_JOINT_RANGE` (weights on a joint index
 past the skin's joints: dropped on load), `D_OPEN_MESH` (the surface is
 too open to tell inside from outside) (warn).
-The standard humanoid skeleton's neck and head are Rigify's numbered spine
-(`DEF-spine.004`/`.005` neck, `DEF-spine.006` head): they get the head
-poses, and the spine poses bend `DEF-spine.001`-`.003` only (until
-2026-11-12 the numbered neck and head counted as spine, so the head poses
-never ran on it and the spine bend was spread over the neck and head). A
-pose that cannot run on the skeleton is a `pose not tested:` line (JSON
+A pose that cannot run on the skeleton is a `pose not tested:` line (JSON
 `skipped_poses`), never left out silently. Distances through the body are
 measured in a voxel fill that small openings in the surface do not empty
 (see `core/src/voxel.rs`); the report's `solid` says how many openings

@@ -316,10 +316,9 @@ fn stiff_word(w: &str) -> bool {
     })
 }
 
-/// Stiff parts: pieces named for one (`belt`, `buckle`...), small loose
-/// shells (a buckle modelled apart), and on a fused body what the paint
-/// shows: a band of one colour round the waist (a belt) or a small patch
-/// on the torso unlike what is round it (a buckle, a pouch, a plate).
+/// Stiff parts: pieces named for one (`belt`, `buckle`...) and small,
+/// solid loose shells off the head (a buckle or a boot's heel cap
+/// modelled apart). A fused body's belt is not found (see below).
 pub fn stiff_parts(model: &Model, vgroup: &[Group], h: f64) -> Vec<Stiff> {
     let nv = model.nverts();
     let mut out: Vec<Stiff> = Vec::new();
@@ -382,7 +381,7 @@ pub fn stiff_parts(model: &Model, vgroup: &[Group], h: f64) -> Vec<Stiff> {
             let e = b - a;
             let (thin, thick) = (e.x.min(e.y).min(e.z), e.x.max(e.y).max(e.z));
             let on_head = vs.iter().filter(|&&v| vgroup[v as usize] == Group::Head).count() * 2 > vs.len();
-            if sz < 0.12 * h && thin > 0.25 * thick && !on_head {
+            if sz < 0.12 * h && thin > 0.35 * thick && !on_head {
                 for &v in vs {
                     taken[v as usize] = true;
                 }
@@ -390,84 +389,16 @@ pub fn stiff_parts(model: &Model, vgroup: &[Group], h: f64) -> Vec<Stiff> {
             }
         }
     }
-    // The paint.
-    let paint = crate::paint::read(model);
-    if paint.textured || paint.material.iter().any(|&m| m != paint.material[0]) {
-        let patch = crate::paint::patches(model, &paint, 0.09);
-        let mut members: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
-        for v in 0..nv {
-            members.entry(patch[v]).or_default().push(v as u32);
-        }
-        let torso = |vs: &[u32]| vs.iter().filter(|&&v| vgroup[v as usize] == Group::Torso).count() * 5 >= vs.len() * 4;
-        for (_, vs) in members {
-            if vs.len() < 12 || vs.iter().any(|&v| taken[v as usize]) || !torso(&vs) || vs.len() * 10 > nv {
-                continue;
-            }
-            let sz = size_of(&vs);
-            let (mut ylo, mut yhi) = (f64::MAX, f64::MIN);
-            let c = vs.iter().fold(Vec3::ZERO, |s, &v| s + model.rest[v as usize]) / vs.len() as f64;
-            let mut bins = [false; 12];
-            for &v in &vs {
-                let p = model.rest[v as usize];
-                ylo = ylo.min(p.y);
-                yhi = yhi.max(p.y);
-                let a = (p.z - c.z).atan2(p.x - c.x);
-                bins[(((a + std::f64::consts::PI) / (2.0 * std::f64::consts::PI) * 12.0) as usize).min(11)] = true;
-            }
-            let band = yhi - ylo < 0.07 * h && bins.iter().filter(|&&b| b).count() >= 10;
-            // A patch unlike what is round it (its rim's mean colour).
-            let mean = |xs: &mut dyn Iterator<Item = usize>| {
-                let (mut s, mut n) = ([0f64; 3], 0.0);
-                for v in xs {
-                    for k in 0..3 {
-                        s[k] += paint.rgb[v][k] as f64;
-                    }
-                    n += 1.0;
-                }
-                if n > 0.0 { Some(s.map(|x| x / n)) } else { None }
-            };
-            let inside = mean(&mut vs.iter().map(|&v| v as usize)).unwrap();
-            let pid = patch[vs[0] as usize];
-            let rim: Vec<usize> =
-                vs.iter().flat_map(|&v| model.adj[v as usize].iter().map(|&u| u as usize)).filter(|&u| patch[u] != pid).collect();
-            let unlike = mean(&mut rim.iter().copied())
-                .map(|r| ((r[0] - inside[0]).powi(2) + (r[1] - inside[1]).powi(2) + (r[2] - inside[2]).powi(2)).sqrt() > 0.15)
-                .unwrap_or(false);
-            // Off the head and not touching it (a beard's tip on the chest
-            // is hair, not a buckle).
-            let by_head = vs.iter().any(|&v| model.adj[v as usize].iter().any(|&u| vgroup[u as usize] == Group::Head));
-            let compact = sz < 0.12 * h && unlike && !by_head;
-            if band || compact {
-                let at = if band {
-                    "a band round the waist".to_string()
-                } else {
-                    let j = model.weights[vs[0] as usize].first().map(|x| x.0 as usize).unwrap_or(0);
-                    format!("a small painted part on the {}", bone_label(model, j))
-                };
-                out.push(Stiff { size: sz, name: at, verts: vs, clips_only: false });
-            }
-        }
-    }
-    // The belt line of a humanoid: the ring of torso skin between the hips
-    // joint and the first spine joint, where a belt or a waistband sits.
-    // In a walk the pelvis moves as one piece; a belt line that bends is a
-    // thigh's weight reaching up into it (the owner, 2026-11-12: "his belt
-    // is weird on the movement").
-    let roles = &model.skel.anatomy.roles;
-    if let (Some(hp), Some(sp)) = (roles.get("hips"), roles.get("spine*")) {
-        let (y0, y1) = (model.skel.head[hp[0]].y, model.skel.head[sp[0]].y);
-        if y1 > y0 {
-            let vs: Vec<u32> = (0..nv as u32)
-                .filter(|&v| {
-                    let p = model.rest[v as usize];
-                    vgroup[v as usize] == Group::Torso && p.y >= y0 && p.y <= y1 && !taken[v as usize] && !model.rigid[v as usize]
-                })
-                .collect();
-            if vs.len() >= 12 {
-                out.push(Stiff { size: size_of(&vs), name: "the belt line (waist)".into(), verts: vs, clips_only: true });
-            }
-        }
-    }
+    // Painted parts (a band of one colour round the waist, a patch unlike
+    // what is round it) were tried on the fused generated bodies and left
+    // out (2026-11-13): on 36 rigs they found one patch, the tip of a
+    // beard; a belt the colour of the vest it sits on is not a patch
+    // (docs/rig-score.md).
+    // The belt line (the ring of torso skin between the hips joint and the
+    // first spine joint) was tried as a stiff part on the clips and left
+    // out (2026-11-13): hand-made rigs' waists bend as much in a run (3.3
+    // cm on the Quaternius and MPFB bodies) as the game hero's (2.5 cm),
+    // so it flagged good rigs and told nothing (docs/rig-score.md).
     out
 }
 

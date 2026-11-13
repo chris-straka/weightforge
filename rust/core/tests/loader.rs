@@ -166,3 +166,21 @@ fn grafted_fingers_do_not_move_the_thighs_tails() {
     assert!(!rep.findings.iter().any(|f| f.code == "D_BLEED"), "{:#?}", rep.findings);
     let _: Vec3 = sk.head[0];
 }
+
+/// A source skeleton named nothing like the target's maps joint for joint
+/// by structural role (`fix::map_joints`), so a rival rig's weights (Tripo's
+/// Mixamo names onto the standard skeleton) can be offered as a candidate.
+#[test]
+fn joints_map_by_role_when_names_differ() {
+    let f = fixtures::build("clean");
+    let dst = load(fixtures::to_glb(&f));
+    let mut g = fixtures::build("clean");
+    for (i, b) in g.bones.iter_mut().enumerate() {
+        b.name = Box::leak(format!("mixamorig_thing_{i}").into_boxed_str());
+    }
+    let src = load(fixtures::to_glb(&g));
+    let map = weightforge_core::fix::map_joints(&src, &dst);
+    for (j, m) in map.iter().enumerate() {
+        assert_eq!(*m, Some(j as u32), "{}", f.bones[j].name);
+    }
+}

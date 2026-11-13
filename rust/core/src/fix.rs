@@ -585,13 +585,33 @@ pub fn joint_bands(model: &Model, ctx: &Ctx) -> Weights {
     prune_all(&pieces_from_body(model, ctx, &w))
 }
 
-/// Maps source joints onto target joints: by name, else by nearest rest
-/// head within 5% of the target's size.
+/// Maps source joints onto target joints: by name; else by structural
+/// role (`anatomy.rs`: a Mixamo `LeftUpLeg` and a `DEF-thigh.L` are both
+/// `thigh.L`; chains by their place along the chain); else by nearest rest
+/// head within 5% of the target's size; else onto whatever the joint's
+/// nearest mapped ancestor maps to (a finger the target lacks goes to its
+/// hand), so no weight is dropped.
 pub fn map_joints(src: &Model, dst: &Model) -> Vec<Option<u32>> {
-    (0..src.njoints())
+    let roles_of = |m: &Model| -> std::collections::BTreeMap<usize, (String, usize, usize)> {
+        let mut out = std::collections::BTreeMap::new();
+        for (r, js) in &m.skel.anatomy.roles {
+            for (i, &j) in js.iter().enumerate() {
+                out.entry(j).or_insert((r.clone(), i, js.len()));
+            }
+        }
+        out
+    };
+    let (rs, rd) = (roles_of(src), &dst.skel.anatomy.roles);
+    let mut map: Vec<Option<u32>> = (0..src.njoints())
         .map(|j| {
             if let Some(t) = dst.skel.joint_by_name(&src.skel.names[j]) {
                 return Some(t as u32);
+            }
+            if let Some((r, i, n)) = rs.get(&j) {
+                if let Some(dj) = rd.get(r).filter(|v| !v.is_empty()) {
+                    let k = if *n <= 1 { 0 } else { ((*i as f64 / (*n - 1) as f64) * (dj.len() - 1) as f64).round() as usize };
+                    return Some(dj[k.min(dj.len() - 1)] as u32);
+                }
             }
             let h = src.skel.head[j];
             let (best, d) = (0..dst.njoints())
@@ -599,7 +619,20 @@ pub fn map_joints(src: &Model, dst: &Model) -> Vec<Option<u32>> {
                 .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap().then(a.0.cmp(&b.0)))?;
             (d <= 0.05 * dst.scale).then_some(best as u32)
         })
-        .collect()
+        .collect();
+    for j in 0..src.njoints() {
+        if map[j].is_none() {
+            let mut p = src.skel.jparent[j];
+            while let Some(q) = p {
+                if let Some(t) = map[q] {
+                    map[j] = Some(t);
+                    break;
+                }
+                p = src.skel.jparent[q];
+            }
+        }
+    }
+    map
 }
 
 /// Method 3, transfer + inpaint (Abdrashitov et al. 2023). With a source

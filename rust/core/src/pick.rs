@@ -204,8 +204,15 @@ struct Search<'a> {
 }
 
 fn dominates(a: &Move, b: &Move) -> bool {
-    // `a` is at least as good as `b` everywhere and blocks no more regions.
-    if !a.members.iter().all(|r| b.members.contains(r)) || a.change > b.change {
+    // `a` is at least as good as `b` everywhere on the same regions. Only
+    // equal member sets compare: a region `b` claims is shielded from
+    // other moves' spills, so a move claiming fewer regions is not safely
+    // better (review 2026-11-13: a subset rule pruned the optimum).
+    let mut am = a.members.clone();
+    let mut bm = b.members.clone();
+    am.sort_unstable();
+    bm.sort_unstable();
+    if am != bm || a.change > b.change {
         return false;
     }
     let regions = a.delta.iter().map(|d| d.0).chain(b.delta.iter().map(|d| d.0));
@@ -525,7 +532,7 @@ pub fn pick_top(p: &Problem, keep: usize) -> Vec<Plan> {
             .collect();
         *list = keep;
         // Most promising first: better incumbents prune more.
-        list.sort_by(|&a, &b| weighted(&p.moves[a]).partial_cmp(&weighted(&p.moves[b])).unwrap().then(a.cmp(&b)));
+        list.sort_by(|&a, &b| weighted(&p.moves[a]).total_cmp(&weighted(&p.moves[b])).then(a.cmp(&b)));
     }
     let input = Plan { moves: Vec::new(), fails: p.fails(&p.counts), energy: energy_of(&p.size, &p.orig), change: 0.0, exact: true };
     let mut s = Search {
@@ -574,6 +581,34 @@ pub fn pick_top(p: &Problem, keep: usize) -> Vec<Plan> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A move on a region alone must not prune the same move on the region
+    /// with its neighbour: the neighbour it claims is shielded from another
+    /// move's spill (review 2026-11-13).
+    #[test]
+    fn fewer_members_does_not_dominate() {
+        let mk = |cand, members: Vec<usize>, delta: Vec<(usize, f64)>, change| Move { cand, members, delta, flags: vec![], change };
+        let p = Problem {
+            orig: vec![1.0, 0.2, 1.0],
+            size: vec![100.0, 100.0, 100.0],
+            cap: vec![1.11, 0.23, 1.11],
+            counts: vec![[0; NFLAG]; 3],
+            fail_at: vec![[i64::MAX; NFLAG]; 3],
+            limit: vec![[i64::MAX; NFLAG]; 3],
+            anchors: vec![0, 2],
+            moves: vec![
+                mk(1, vec![0, 1], vec![(0, -0.5), (1, -0.1)], 2.0),
+                mk(1, vec![0], vec![(0, -0.5), (1, -0.1)], 1.0),
+                mk(2, vec![2], vec![(2, -0.5), (1, 0.3)], 1.0),
+            ],
+            gate_first: true,
+            edit_cost: 0.0,
+            min_gain: 0.2,
+        };
+        let got = pick(&p);
+        let (e, _) = plan_regions(&p, &[0, 2]);
+        assert!((got.energy - energy_of(&p.size, &e)).abs() < 1e-9, "picked {:?} at {}", got.moves, got.energy);
+    }
     use crate::math::Rng;
 
     /// A random picking problem shaped like a real one: a chain of regions,

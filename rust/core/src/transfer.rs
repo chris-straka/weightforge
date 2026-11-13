@@ -41,7 +41,7 @@ pub fn closest_on_tri(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> [f64; 3] {
     }
     let vc = d1 * d4 - d3 * d2;
     if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 {
-        let v = d1 / (d1 - d3);
+        let v = if d1 - d3 != 0.0 { d1 / (d1 - d3) } else { 0.0 };
         return [1.0 - v, v, 0.0];
     }
     let cp = p - c;
@@ -52,15 +52,20 @@ pub fn closest_on_tri(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> [f64; 3] {
     }
     let vb = d5 * d2 - d1 * d6;
     if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 {
-        let w = d2 / (d2 - d6);
+        let w = if d2 - d6 != 0.0 { d2 / (d2 - d6) } else { 0.0 };
         return [1.0 - w, 0.0, w];
     }
     let va = d3 * d6 - d5 * d4;
     if va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0 {
-        let w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
+        let den = (d4 - d3) + (d5 - d6);
+        let w = if den != 0.0 { (d4 - d3) / den } else { 0.0 };
         return [0.0, 1.0 - w, w];
     }
-    let denom = 1.0 / (va + vb + vc);
+    let sum = va + vb + vc;
+    if sum == 0.0 {
+        return [1.0, 0.0, 0.0]; // a degenerate (zero-area) triangle
+    }
+    let denom = 1.0 / sum;
     let v = vb * denom;
     let w = vc * denom;
     [1.0 - v - w, v, w]
@@ -111,7 +116,11 @@ impl<'a> TriIndex<'a> {
         let c = Self::key(p, self.cell);
         // Rings until the best hit is provably inside the searched cube.
         let span = ((self.hi - self.lo).len() / self.cell).ceil() as i64 + 2;
-        let outside = (p.max(self.lo) - p).len().max((p - p.min(self.hi)).len());
+        // Rings skipped at the start: the per-axis (Chebyshev) gap to the
+        // index's box, in cells; a Euclidean gap skipped rings holding
+        // nearer cells off a corner (review 2026-11-13).
+        let gap = (self.lo - p).max(p - self.hi).max(Vec3::ZERO);
+        let outside = gap.x.max(gap.y).max(gap.z);
         let start = ((outside / self.cell).floor() as i64 - 1).max(0);
         let mut best: Option<Hit> = None;
         let mut r = start;
@@ -129,6 +138,9 @@ impl<'a> TriIndex<'a> {
                             let bary = closest_on_tri(p, a, b, cc);
                             let q = a * bary[0] + b * bary[1] + cc * bary[2];
                             let d = (q - p).len();
+                            if !d.is_finite() || bary.iter().any(|b| !b.is_finite()) {
+                                continue;
+                            }
                             if best.is_none_or(|h| d < h.dist || (d == h.dist && ti < h.tri)) {
                                 best = Some(Hit { tri: ti, bary, dist: d, point: q });
                             }
@@ -205,7 +217,10 @@ pub fn inpaint_from_matches(adj: &[Vec<u32>], matches: &[(u32, [u32; 3], [f64; 3
     let subset: Vec<u32> = matches.iter().map(|m| m.0).collect();
     for &(v, t, b, ok) in matches {
         let w = blend(src_w, t, b);
-        if ok {
+        // A match whose source weights are all on joints with no
+        // counterpart is no known value (it would leave the vertex
+        // unweighted); it is inpainted instead.
+        if ok && !w.is_empty() {
             known[v as usize] = Some(w.clone());
         }
         nearest[v as usize] = Some(w);
@@ -235,4 +250,55 @@ pub fn match_within(
     let normals = crate::scene::vertex_normals(pos, tris);
     let index = TriIndex::new(pos, src_tris);
     match_subset(&index, &normals, pos, &normals, targets, max_dist, deg.to_radians().cos())
+}
+
+#[cfg(test)]
+mod review_tests {
+    use super::*;
+    use crate::math::v3;
+
+    /// Off a corner of the index's box the nearest triangle is still found
+    /// (review 2026-11-13: a Euclidean ring skip missed it).
+    #[test]
+    fn nearest_off_a_corner() {
+        let n = 40;
+        let mut pos = Vec::new();
+        let mut tris = Vec::new();
+        for i in 0..=n {
+            for j in 0..=n {
+                pos.push(v3(i as f64 * 0.025, j as f64 * 0.025, 0.0));
+            }
+        }
+        for i in 0..n {
+            for j in 0..n {
+                let a = (i * (n + 1) + j) as u32;
+                tris.push([a, a + 1, a + n as u32 + 2]);
+                tris.push([a, a + n as u32 + 2, a + n as u32 + 1]);
+            }
+        }
+        let idx = TriIndex::new(&pos, tris.clone());
+        let p = v3(-0.3, -0.3, 0.3);
+        let h = idx.closest(p).unwrap();
+        let brute = tris
+            .iter()
+            .map(|t| {
+                let (a, b, c) = (pos[t[0] as usize], pos[t[1] as usize], pos[t[2] as usize]);
+                let w = closest_on_tri(p, a, b, c);
+                (a * w[0] + b * w[1] + c * w[2] - p).len()
+            })
+            .fold(f64::MAX, f64::min);
+        assert!((h.dist - brute).abs() < 1e-9, "{} vs {brute}", h.dist);
+    }
+
+    /// A zero-length edge gives finite barycentrics and does not poison
+    /// the search.
+    #[test]
+    fn degenerate_triangle_is_harmless() {
+        let b = closest_on_tri(v3(0.5, 1.0, 0.0), v3(0.0, 0.0, 0.0), v3(0.0, 0.0, 0.0), v3(1.0, 0.0, 0.0));
+        assert!(b.iter().all(|x| x.is_finite()), "{b:?}");
+        let pos = vec![v3(0.0, 0.0, 0.0), v3(1.0, 0.0, 0.0), v3(0.0, 0.1, 0.0), v3(1.0, 0.1, 0.0), v3(0.5, 0.2, 0.0)];
+        let idx = TriIndex::new(&pos, vec![[0, 0, 1], [2, 3, 4]]);
+        let h = idx.closest(v3(0.5, 0.15, 0.0)).unwrap();
+        assert!(h.dist.is_finite() && h.dist < 0.051, "{}", h.dist);
+    }
 }

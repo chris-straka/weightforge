@@ -136,6 +136,9 @@ pub struct FixResult {
     pub report_before: Report,
     pub report_after: Report,
     pub fix: FixReport,
+    /// Skin inside failing headline findings after the fix (cm^2 on a
+    /// 1.75 m body, poses and clips together), when the guard judged.
+    pub torn_cm2: Option<f64>,
 }
 
 // ------------------------------------------------------------------ helpers
@@ -905,7 +908,12 @@ pub fn fix(file: &str, model: &Model, ctx: &Ctx, o: &FixOpts) -> FixResult {
     };
     let mut without = fix_once(file, model, ctx, &plain);
     let key = |r: &FixResult| (r.report_after.pass, r.report_after.score);
-    if key(&without) > key(&with) {
+    let better_without = match (with.torn_cm2, without.torn_cm2) {
+        // Judged by what is seen when the guard is on.
+        (Some(a), Some(b)) => b + 1e-9 < a,
+        _ => key(&without) > key(&with),
+    };
+    if better_without {
         without.fix.methods = with.fix.methods.clone();
         without.fix.external_kept = false;
         return without;
@@ -1435,11 +1443,68 @@ fn fix_once(file: &str, model: &Model, ctx: &Ctx, o: &FixOpts) -> FixResult {
         Some(k) => k,
         None => (vec![0; nr], model.weights.clone(), evaluate(model, ctx, &model.weights), rep0.clone()),
     };
-    if o.headline_guard && w != model.weights {
-        let mut groups: Vec<(&Ctx, bool)> = vec![(ctx, false)];
-        if let Some(m) = o.motion {
-            groups.push((m, true));
+    let mut groups: Vec<(&Ctx, bool)> = vec![(ctx, false)];
+    if let Some(m) = o.motion {
+        groups.push((m, true));
+    }
+    // Headline choice: a region that still tears takes the candidate that
+    // tears least there, if that is clearly less (2 cm^2 and a tenth), its
+    // weights blended in at the seams. The score's pick can't see what a
+    // person sees (Tripo's crotch, 2026-11-13); this can.
+    if o.headline_guard && cands.len() > 1 {
+        let area = crate::owner::vertex_areas(model);
+        let k = crate::owner::BODY_M / crate::owner::height(model);
+        let torn_area = |wt: &Weights| -> Vec<f64> {
+            let t: Vec<Vec<bool>> = groups.iter().map(|&(c, m)| crate::owner::torn(model, c, wt, m)).collect();
+            let mut a = vec![0.0; nr];
+            for v in 0..model.nverts() {
+                if t.iter().any(|x| x[v]) {
+                    a[ctx.vregion[v] as usize] += area[v] * k * k * 1e4;
+                }
+            }
+            a
+        };
+        let cur_a = torn_area(&w);
+        if cur_a.iter().any(|&x| x > 0.0) {
+            let cand_a: Vec<Vec<f64>> = cands.iter().map(|c| torn_area(&c.w)).collect();
+            let mut pick = vec![0usize; nr];
+            for r in 0..nr {
+                if cur_a[r] <= 0.0 {
+                    continue;
+                }
+                let (bi, ba) =
+                    cand_a.iter().enumerate().map(|(i, a)| (i, a[r])).fold((usize::MAX, f64::MAX), |b, x| if x.1 < b.1 { x } else { b });
+                if bi != usize::MAX && ba + (0.1 * cur_a[r]).max(2.0) < cur_a[r] {
+                    pick[r] = bi + 1;
+                }
+            }
+            if pick.iter().any(|&p| p > 0) {
+                let mut with_cur = vec![Candidate { name: "current".into(), w: w.clone(), region_e: Vec::new() }];
+                with_cur.extend(cands.iter().map(|c| Candidate { name: c.name.clone(), w: c.w.clone(), region_e: Vec::new() }));
+                let all = vec![true; model.nverts()];
+                let w2 = blend(model, ctx, &with_cur, &pick, &all, seam);
+                let after = torn_area(&w2);
+                if after.iter().sum::<f64>() + 2.0 < cur_a.iter().sum::<f64>() {
+                    if std::env::var_os("WF_DEBUG").is_some() {
+                        let names: Vec<String> = (0..nr)
+                            .filter(|&r| pick[r] > 0)
+                            .map(|r| format!("{} <- {}", ctx.regions[r].label, cands[pick[r] - 1].name))
+                            .collect();
+                        eprintln!("headline choice: {}", names.join(", "));
+                    }
+                    for r in 0..nr {
+                        if pick[r] > 0 {
+                            choice[r] = pick[r] - 1;
+                        }
+                    }
+                    w = w2;
+                    ev = evaluate(model, ctx, &w);
+                    rep1 = build(file, model, ctx, &ev);
+                }
+            }
         }
+    }
+    if o.headline_guard && w != model.weights {
         let (wg, back) = crate::owner::guard(model, &groups, &model.weights, &w);
         if wg != w {
             if std::env::var_os("WF_DEBUG").is_some() {
@@ -1455,12 +1520,21 @@ fn fix_once(file: &str, model: &Model, ctx: &Ctx, o: &FixOpts) -> FixResult {
             rep1 = build(file, model, ctx, &ev);
         }
     }
-    if ranks_below(&rep1, &rep0) || new_fails(&rep1) {
+    // The score's gate, when the headline does not judge: with the guard
+    // on, nothing is kept that tears more skin than the input, and the
+    // score may disagree with what is seen (it did on Tripo's crotch).
+    if !o.headline_guard && (ranks_below(&rep1, &rep0) || new_fails(&rep1)) {
         w = model.weights.clone();
         ev = ev0;
         rep1 = build(file, model, ctx, &ev);
         choice = vec![0; nr];
     }
+    let torn_cm2 = o.headline_guard.then(|| {
+        let area = crate::owner::vertex_areas(model);
+        let k = crate::owner::BODY_M / crate::owner::height(model);
+        let t: Vec<Vec<bool>> = groups.iter().map(|&(c, m)| crate::owner::torn(model, c, &w, m)).collect();
+        (0..model.nverts()).filter(|&v| t.iter().any(|x| x[v])).map(|v| area[v]).sum::<f64>() * k * k * 1e4
+    });
 
     let re1 = region_energy(ctx, &ev);
     let regions = (0..nr)
@@ -1499,7 +1573,7 @@ fn fix_once(file: &str, model: &Model, ctx: &Ctx, o: &FixOpts) -> FixResult {
         findings_before: rep0.findings.clone(),
         findings_after: rep1.findings.clone(),
     };
-    FixResult { weights: w, eval: ev, report_before: rep0, report_after: rep1, fix }
+    FixResult { weights: w, eval: ev, report_before: rep0, report_after: rep1, fix, torn_cm2 }
 }
 
 /// Whether a result ranks below another by the order every stage of the

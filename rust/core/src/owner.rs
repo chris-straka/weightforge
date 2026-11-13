@@ -49,11 +49,15 @@ pub struct Thresholds {
 impl Default for Thresholds {
     fn default() -> Self {
         Thresholds {
-            wrong_bone_m: 0.035,
-            lag_radii: 0.35,
-            lag_min_m: 0.015,
+            // Set 2026-11-13 between the hand-made game rigs and the
+            // generated cast on the hero's clips (bench/rig_score.py,
+            // docs/rig-score.md): hand-made rigs reach 4-8 cm (wrong bone)
+            // and 2-4 cm (not following), the cast 7-70 cm.
+            wrong_bone_m: 0.06,
+            lag_radii: 0.5,
+            lag_min_m: 0.05,
             stiff_share: 0.08,
-            stiff_min_m: 0.008,
+            stiff_min_m: 0.015,
             min_verts: 3,
             min_area_cm2: 2.0,
         }
@@ -271,6 +275,9 @@ pub struct Stiff {
     pub verts: Vec<u32>,
     pub name: String,
     pub size: f64,
+    /// Judged on the game's clips only (the belt line: a waist bends in a
+    /// range-of-motion spine bend by design).
+    pub clips_only: bool,
 }
 
 const STIFF_WORDS: &[&str] = &[
@@ -336,7 +343,7 @@ pub fn stiff_parts(model: &Model, vgroup: &[Group], h: f64) -> Vec<Stiff> {
                 for &v in &vs {
                     taken[v as usize] = true;
                 }
-                out.push(Stiff { size: size_of(&vs), name: format!("the {}", part.name), verts: vs });
+                out.push(Stiff { size: size_of(&vs), name: format!("the {}", part.name), verts: vs, clips_only: false });
             }
         }
     }
@@ -365,11 +372,21 @@ pub fn stiff_parts(model: &Model, vgroup: &[Group], h: f64) -> Vec<Stiff> {
     for vs in &shells {
         if vs.len() >= 8 && vs.len() * 33 < nv && !vs.iter().any(|&v| taken[v as usize] || model.rigid[v as usize]) {
             let sz = size_of(vs);
-            if sz < 0.2 * h {
+            // A buckle or a pouch: off the head (lashes, teeth, brows are
+            // faces), and solid, not a strip or a card (hair, frills).
+            let (mut a, mut b) = (model.rest[vs[0] as usize], model.rest[vs[0] as usize]);
+            for &v in vs {
+                a = a.min(model.rest[v as usize]);
+                b = b.max(model.rest[v as usize]);
+            }
+            let e = b - a;
+            let (thin, thick) = (e.x.min(e.y).min(e.z), e.x.max(e.y).max(e.z));
+            let on_head = vs.iter().filter(|&&v| vgroup[v as usize] == Group::Head).count() * 2 > vs.len();
+            if sz < 0.12 * h && thin > 0.25 * thick && !on_head {
                 for &v in vs {
                     taken[v as usize] = true;
                 }
-                out.push(Stiff { size: sz, name: "a small loose part".into(), verts: vs.clone() });
+                out.push(Stiff { size: sz, name: "a small loose part".into(), verts: vs.clone(), clips_only: false });
             }
         }
     }
@@ -416,7 +433,10 @@ pub fn stiff_parts(model: &Model, vgroup: &[Group], h: f64) -> Vec<Stiff> {
             let unlike = mean(&mut rim.iter().copied())
                 .map(|r| ((r[0] - inside[0]).powi(2) + (r[1] - inside[1]).powi(2) + (r[2] - inside[2]).powi(2)).sqrt() > 0.15)
                 .unwrap_or(false);
-            let compact = sz < 0.12 * h && unlike;
+            // Off the head and not touching it (a beard's tip on the chest
+            // is hair, not a buckle).
+            let by_head = vs.iter().any(|&v| model.adj[v as usize].iter().any(|&u| vgroup[u as usize] == Group::Head));
+            let compact = sz < 0.12 * h && unlike && !by_head;
             if band || compact {
                 let at = if band {
                     "a band round the waist".to_string()
@@ -424,7 +444,27 @@ pub fn stiff_parts(model: &Model, vgroup: &[Group], h: f64) -> Vec<Stiff> {
                     let j = model.weights[vs[0] as usize].first().map(|x| x.0 as usize).unwrap_or(0);
                     format!("a small painted part on the {}", bone_label(model, j))
                 };
-                out.push(Stiff { size: sz, name: at, verts: vs });
+                out.push(Stiff { size: sz, name: at, verts: vs, clips_only: false });
+            }
+        }
+    }
+    // The belt line of a humanoid: the ring of torso skin between the hips
+    // joint and the first spine joint, where a belt or a waistband sits.
+    // In a walk the pelvis moves as one piece; a belt line that bends is a
+    // thigh's weight reaching up into it (the owner, 2026-11-12: "his belt
+    // is weird on the movement").
+    let roles = &model.skel.anatomy.roles;
+    if let (Some(hp), Some(sp)) = (roles.get("hips"), roles.get("spine*")) {
+        let (y0, y1) = (model.skel.head[hp[0]].y, model.skel.head[sp[0]].y);
+        if y1 > y0 {
+            let vs: Vec<u32> = (0..nv as u32)
+                .filter(|&v| {
+                    let p = model.rest[v as usize];
+                    vgroup[v as usize] == Group::Torso && p.y >= y0 && p.y <= y1 && !taken[v as usize] && !model.rigid[v as usize]
+                })
+                .collect();
+            if vs.len() >= 12 {
+                out.push(Stiff { size: size_of(&vs), name: "the belt line (waist)".into(), verts: vs, clips_only: true });
             }
         }
     }
@@ -511,11 +551,25 @@ pub fn assess(
     let cm2 = |vs: &[u32]| vs.iter().map(|&v| varea[v as usize]).sum::<f64>() * k * k * 1e4;
     let sk = &model.skel;
     let anat = &sk.anatomy;
-    // Each vertex's bone: its region's, else (pieces) the nearest by distance through the body.
+    // Each vertex's bone: the nearest by distance through the body that
+    // carries weight (an unweighted IK bone at a hoof owns nothing), else
+    // its region's.
+    let mut weighted = vec![false; sk.joints.len()];
+    for vw in w {
+        for &(j, x) in vw {
+            if x > 0.0 {
+                weighted[crate::helpers::owner(sk, j as usize)] = true;
+            }
+        }
+    }
     let vbone: Vec<usize> = (0..nv)
-        .map(|v| match ctx.region_bone[ctx.vregion[v] as usize] {
-            Some(j) => crate::helpers::owner(sk, j),
-            None => crate::helpers::owner(sk, ctx.geo.nearest(v).map(|e| e.0 as usize).unwrap_or(0)),
+        .map(|v| {
+            let near = ctx.geo.near[v].iter().map(|e| crate::helpers::owner(sk, e.0 as usize)).find(|&j| weighted[j]);
+            match (near, ctx.region_bone[ctx.vregion[v] as usize]) {
+                (Some(j), _) => j,
+                (None, Some(j)) => crate::helpers::owner(sk, j),
+                (None, None) => crate::helpers::owner(sk, ctx.geo.nearest(v).map(|e| e.0 as usize).unwrap_or(0)),
+            }
         })
         .collect();
     let vgroup: Vec<Group> = vbone.iter().map(|&j| anat.group.get(j).cloned().unwrap_or_default()).collect();
@@ -523,6 +577,27 @@ pub fn assess(
 
     // ---- candidates: wrong bone (weight on another limb).
     let mut hops = Hops { model, cache: BTreeMap::new() };
+    // A limb's first bones (and any bone of its above them): where a limb
+    // meets the torso.
+    let mut proximal = vec![false; sk.joints.len()];
+    for (role, js) in &anat.roles {
+        let first = ["shoulder.", "upper_arm.", "thigh."].iter().any(|p| role.starts_with(p)) || role.contains("_upper.");
+        if first {
+            for &j in js {
+                let mut x = Some(j);
+                while let Some(q) = x {
+                    if !matches!(bgroup(q), Group::Limb(_)) {
+                        break;
+                    }
+                    proximal[q] = true;
+                    x = sk.jparent[q];
+                }
+            }
+        }
+    }
+    for h in &sk.helpers {
+        proximal[h.joint] = proximal[h.driver];
+    }
     let mut foreign: Vec<Option<(Vec<(u32, f64)>, u32)>> = vec![None; nv];
     for v in 0..nv {
         if model.rigid[v] {
@@ -535,7 +610,17 @@ pub fn assess(
         for &(b, x) in &w[v] {
             let bo = crate::helpers::owner(sk, b as usize);
             let gb = bgroup(bo);
-            let ok = bo == r || gb == *gr || ((gb == Group::Torso || *gr == Group::Torso) && hops.from(r)[bo] <= 2);
+            // The same part, the torso and head together, and the torso
+            // with a limb's first bones (armpit, groin, flank) blend; a
+            // limb never follows another limb, nor the torso a forearm,
+            // hand, shin or foot.
+            let core = |g: &Group| matches!(g, Group::Torso | Group::Head);
+            let ok = bo == r
+                || gb == *gr
+                || (core(&gb) && core(gr))
+                || (core(gr) && proximal[bo])
+                || (core(&gb) && proximal[r])
+                || (core(&gb) && hops.from(r)[bo] <= 1);
             if ok {
                 home.push((b, x));
             } else if far.is_none_or(|f| x > f.1) {
@@ -603,10 +688,20 @@ pub fn assess(
             let stiff = stiff
                 .iter()
                 .enumerate()
+                .filter(|(_, s)| motion || !s.clips_only)
                 .filter_map(|(si, s)| {
                     let a: Vec<Vec3> = s.verts.iter().map(|&v| model.rest[v as usize]).collect();
                     let b: Vec<Vec3> = s.verts.iter().map(|&v| posed[v as usize]).collect();
                     let r = rigid_residual(&a, &b);
+                    if std::env::var_os("WF_DEBUG_STIFF").is_some() {
+                        eprintln!(
+                            "stiff {} pose {} residual {:.2} cm ({:.1}% of size)",
+                            s.name,
+                            ctx.poses[p].name,
+                            r * k * 100.0,
+                            100.0 * r / s.size
+                        );
+                    }
                     (r > th.stiff_share * s.size && r * k > th.stiff_min_m).then_some((si, r * k))
                 })
                 .collect();
@@ -766,13 +861,12 @@ pub fn assess(
             "D_BLEED" => ("bleed", crate::metrics::F_BLEED),
             "D_NOISE" => ("noise", crate::metrics::F_NOISE),
             "D_UNWEIGHTED" => ("unweighted", crate::metrics::F_UNWEIGHTED),
-            "D_PIECE_BONES" => ("piece_bones", crate::metrics::F_PIECE),
             "D_PIECE_FOLLOW" => ("piece_follow", crate::metrics::F_FOLLOW),
             _ => continue,
         };
         // Weight-only findings belong to the poses' section, where every
         // part of the body is moved; the clips' section shows motion.
-        if motion && matches!(kind, "bleed" | "unweighted" | "piece_bones") {
+        if motion && matches!(kind, "bleed" | "unweighted") {
             continue;
         }
         let vs: Vec<u32> = (0..nv as u32)
@@ -823,8 +917,8 @@ pub fn assess(
         frames: ctx.poses.len(),
         clips,
         source,
-        tears_pct: (tears_area / total_area * 1e4).round() / 100.0,
-        tears_verts_pct: (tears_verts as f64 / nv.max(1) as f64 * 1e4).round() / 100.0,
+        tears_pct: (tears_area / total_area * 1e4).round() / 100.0 + 0.0,
+        tears_verts_pct: (tears_verts as f64 / nv.max(1) as f64 * 1e4).round() / 100.0 + 0.0,
         through_cm2: ((0..nv).filter(|&v| through[v]).map(|v| varea[v]).sum::<f64>() * k * k * 1e4).round(),
         findings,
     }

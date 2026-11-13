@@ -66,6 +66,7 @@ def main():
     ap.add_argument("--new", required=True)
     ap.add_argument("--motionforge", required=True)
     ap.add_argument("--only-table", action="store_true")
+    ap.add_argument("--new-only", action="store_true", help="keep the old checker's and motionforge's outputs, rerun the new checker")
     ap.add_argument("rigs", nargs="+")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
@@ -86,15 +87,17 @@ def main():
         anim = os.path.join(d, "anim.glb")
         if not a.only_table:
             print(f"== {name}", flush=True)
-            run([a.old, "check", path, "--no-clips", "--json"], os.path.join(d, "old.poses.json"))
-            code, err = run([a.motionforge, "animate", "--input", path, "--clips", clipdir, "--pick", pick, "--output", anim],
-                            os.path.join(d, "animate.txt"))
-            if code != 0 and os.path.exists(anim):
-                os.remove(anim)
-            with open(os.path.join(d, "animate.err"), "w") as f:
-                f.write(err)
+            if not a.new_only:
+                run([a.old, "check", path, "--no-clips", "--json"], os.path.join(d, "old.poses.json"))
+                code, err = run([a.motionforge, "animate", "--input", path, "--clips", clipdir, "--pick", pick, "--output", anim],
+                                os.path.join(d, "animate.txt"))
+                if code != 0 and os.path.exists(anim):
+                    os.remove(anim)
+                with open(os.path.join(d, "animate.err"), "w") as f:
+                    f.write(err)
+                if os.path.exists(anim):
+                    run([a.old, "check", anim, "--poses", rest, "--json"], os.path.join(d, "old.clips.json"))
             if os.path.exists(anim):
-                run([a.old, "check", anim, "--poses", rest, "--json"], os.path.join(d, "old.clips.json"))
                 run([a.new, "check", anim, "--json"], os.path.join(d, "new.json"))
             else:
                 run([a.new, "check", path, "--json", "--motion", a.hero], os.path.join(d, "new.json"))

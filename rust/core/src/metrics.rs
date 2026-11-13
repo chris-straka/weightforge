@@ -348,6 +348,25 @@ pub fn noise_of(model: &Model, w: &Weights, v: usize) -> f64 {
     median.min(l1(&w[v], &mean)).min(linear)
 }
 
+/// A speckle stands out of its neighbours: for some bone its weight is
+/// above every neighbour's or below every neighbour's by a quarter. A
+/// vertex at a joint on a coarse mesh, halfway between a neighbour on
+/// each side, is not one.
+pub fn outlier(w: &Weights, model: &Model, v: usize) -> bool {
+    let n = &model.adj[v];
+    let mut bones: Vec<u32> = w[v].iter().map(|e| e.0).collect();
+    for &u in n {
+        bones.extend(w[u as usize].iter().map(|e| e.0));
+    }
+    bones.sort_unstable();
+    bones.dedup();
+    bones.iter().any(|&j| {
+        let x = weight_of(&w[v], j);
+        let (lo, hi) = n.iter().map(|&u| weight_of(&w[u as usize], j)).fold((f64::MAX, f64::MIN), |a, y| (a.0.min(y), a.1.max(y)));
+        x > hi + 0.25 || x < lo - 0.25
+    })
+}
+
 /// L1 distance from a vertex's weights to the value a linear fit of its
 /// neighbors' weights predicts at the vertex.
 fn linear_residual(model: &Model, w: &Weights, v: usize) -> f64 {
@@ -585,7 +604,9 @@ fn evaluate_inner(model: &Model, ctx: &Ctx, w: &Weights, intersect: bool, only: 
     // off its neighbours (a third of an edge or more). Weights that differ
     // between bones moving together (a face rig at rest, a helper and its
     // driver, a coarse mesh's one-edge blend) never do.
-    let speckled: Vec<u32> = (0..nv as u32).filter(|&v| noise[v as usize] > th.noise && !model.adj[v as usize].is_empty()).collect();
+    let speckled: Vec<u32> = (0..nv as u32)
+        .filter(|&v| noise[v as usize] > th.noise && !model.adj[v as usize].is_empty() && outlier(&weq, model, v as usize))
+        .collect();
     let lap_rest: Vec<(Vec3, f64)> = speckled
         .iter()
         .map(|&v| {

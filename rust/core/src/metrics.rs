@@ -812,6 +812,22 @@ fn evaluate_inner(model: &Model, ctx: &Ctx, w: &Weights, intersect: bool, only: 
         }
     }
     let visible = |v: usize| shows[v] > 1.0 / 3.0;
+    // A speckle's worst pose is where it kinks most, unless a tear or a
+    // collapse already named one (review 2026-11-13: every noise finding
+    // said the first pose).
+    let mut kink_best = vec![(0.0f64, 0u32); nv];
+    for (p, po) in per_pose.iter().enumerate() {
+        for &(v, k) in &po.kink {
+            if k > kink_best[v as usize].0 {
+                kink_best[v as usize] = (k, p as u32);
+            }
+        }
+    }
+    for v in 0..nv {
+        if worst_val[v] <= 0.0 && kink_best[v].0 > 0.0 {
+            worst_pose[v] = kink_best[v].1;
+        }
+    }
     let bleed: Vec<Option<(u32, f64, f64)>> =
         (0..nv).into_par_iter().map(|v| if mask[v] && !model.rigid[v] { bleed_of(ctx, model, w, v) } else { None }).collect();
     for &v in &verts {
@@ -898,14 +914,16 @@ pub fn intersect_pairs(model: &Model, posed: &[Vec3], sep: f64) -> Vec<(u32, u32
     if tris.is_empty() {
         return out;
     }
-    let mean_edge = {
-        let mut s = 0.0;
-        for t in tris.iter().take(4096) {
-            s += (posed[t[0] as usize] - posed[t[1] as usize]).len();
-        }
-        (s / tris.len().min(4096) as f64).max(1e-9)
+    // Cell size from the median edge over all triangles (rest), not the
+    // first 4096: those can be a small detailed part, and big body
+    // triangles then span more cells than are searched (review 2026-11-13).
+    let median_edge = {
+        let step = (tris.len() / 20000).max(1);
+        let mut e: Vec<f64> = tris.iter().step_by(step).map(|t| (model.rest[t[0] as usize] - model.rest[t[1] as usize]).len()).collect();
+        e.sort_by(|a, b| a.total_cmp(b));
+        e.get(e.len() / 2).copied().unwrap_or(1e-9).max(1e-9)
     };
-    let cell = mean_edge * 2.0;
+    let cell = median_edge * 2.0;
     let mut grid: BTreeMap<(i64, i64, i64), Vec<u32>> = BTreeMap::new();
     for (ti, t) in tris.iter().enumerate() {
         let p = t.map(|i| posed[i as usize]);

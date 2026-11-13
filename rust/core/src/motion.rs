@@ -108,9 +108,11 @@ pub fn transfer(src: &Model, src_name: &str, dst: &Model, names: &[String], fps:
     if map.len() < 8 {
         return Err(format!("only {} bones in common by role", map.len()));
     }
-    let up = v3(0.0, 1.0, 0.0);
-    let yaw = Quat::from_to(src.skel.anatomy.forward, dst.skel.anatomy.forward);
-    let _ = up;
+    // The yaw about up (a 180-degree turn from from_to could tip the body
+    // over; review 2026-11-13).
+    let (fs, fd) = (src.skel.anatomy.forward, dst.skel.anatomy.forward);
+    let ang = fd.z.atan2(fd.x) - fs.z.atan2(fs.x);
+    let yaw = Quat::from_axis_angle(v3(0.0, 1.0, 0.0), -ang);
     // Rest alignment for limbs (the spine and hips keep the target's own
     // rest shape).
     let limb = |role: &str| {
@@ -121,8 +123,12 @@ pub fn transfer(src: &Model, src_name: &str, dst: &Model, names: &[String], fps:
     let align: BTreeMap<usize, Quat> = map
         .iter()
         .map(|&(d, s)| {
+            // Only bones whose direction both rigs give (a child at the
+            // tail); an end bone's tail is a guess, and aligning to it bent
+            // feet and hands 70-100 degrees at rest (review 2026-11-13).
+            let real = |m: &Model, j: usize| m.skel.jchildren[j].iter().any(|&c| (m.skel.head[c] - m.skel.tail[j]).len() < 1e-6);
             let a = match (role_of.get(&d), dir(dst, d), dir(src, s)) {
-                (Some(r), Some(dd), Some(sd)) if limb(r) => Quat::from_to(dd, yaw.rotate(sd)),
+                (Some(r), Some(dd), Some(sd)) if limb(r) && real(dst, d) && real(src, s) => Quat::from_to(dd, yaw.rotate(sd)),
                 _ => Quat::IDENTITY,
             };
             (d, a)

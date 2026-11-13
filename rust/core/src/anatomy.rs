@@ -150,6 +150,18 @@ impl Tree<'_> {
         }
         out
     }
+    /// Every joint under `j` in the skeleton, weighted or not (groups must
+    /// cover joints that are never a vertex's largest weight, like hair
+    /// bones; review 2026-11-13).
+    fn all_desc(&self, j: usize) -> Vec<usize> {
+        let mut out = vec![];
+        let mut stack = vec![j];
+        while let Some(x) = stack.pop() {
+            out.push(x);
+            stack.extend(self.sk.jchildren[x].iter().copied());
+        }
+        out
+    }
     fn is_desc(&self, j: usize, of: usize) -> bool {
         self.ancestors(j).contains(&of)
     }
@@ -387,7 +399,7 @@ pub fn analyze(sk: &Skeleton, rest: &[Vec3], weights: &Weights) -> Anatomy {
         let _ = l.end;
     };
     let set_group = |a: &mut Anatomy, root: usize, g: Group| {
-        for j in t.descendants(root) {
+        for j in t.all_desc(root) {
             a.group[j] = g.clone();
         }
     };
@@ -614,7 +626,7 @@ fn humanoid(
             a.roles.insert("neck".into(), above[..hi].to_vec());
         }
         a.roles.insert("head".into(), vec![head]);
-        for j in t.descendants(above[0]) {
+        for j in t.all_desc(above[0]) {
             a.group[j] = Group::Head;
         }
     }
@@ -634,7 +646,7 @@ fn humanoid(
             "R"
         };
         arm_roles(a, t, root, side, left, mid, h);
-        for j in t.descendants(root) {
+        for j in t.all_desc(root) {
             a.group[j] = Group::Limb(format!("arm.{side}"));
         }
     }

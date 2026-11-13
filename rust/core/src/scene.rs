@@ -1070,7 +1070,10 @@ impl Model {
             let mut wrows = Vec::with_capacity(prim.raw_to_weld.len());
             for (ri, &wi) in prim.raw_to_weld.iter().enumerate() {
                 if let Some(raw) = &prim.raw_rows {
-                    if w[wi as usize] == self.weights[wi as usize] && !self.seam_split.contains(&wi) {
+                    // Rows holding an index past the skin's joints (dropped
+                    // on load) are written afresh, never copied.
+                    let valid = raw[ri].0.iter().zip(&raw[ri].1).all(|(&j, &x)| x <= 0.0 || (j as usize) < self.skins[k].joints.len());
+                    if valid && w[wi as usize] == self.weights[wi as usize] && !self.seam_split.contains(&wi) {
                         jrows.push(raw[ri].0);
                         wrows.push(raw[ri].1);
                         continue;

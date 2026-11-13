@@ -414,7 +414,12 @@ fn side_word(model: &Model, vs: &[u32], j: usize) -> &'static str {
         return "";
     }
     let left = a.up.cross(a.forward).normalized();
-    let (f, l) = (r.dot(a.forward), r.dot(left));
+    let (f, l, u) = (r.dot(a.forward), r.dot(left), r.dot(a.up));
+    // A limb lying sideways (a T-pose arm) has its top and underside along
+    // up, not front and back (review 2026-11-13).
+    if u.abs() > f.abs() && u.abs() > l.abs() {
+        return if u > 0.0 { "top" } else { "underside" };
+    }
     if f.abs() >= l.abs() {
         if f > 0.0 { "front" } else { "back" }
     } else {
@@ -530,6 +535,10 @@ pub fn assess(
         proximal[h.joint] = proximal[h.driver];
     }
     let mut foreign: Vec<Option<(Vec<(u32, f64)>, u32)>> = vec![None; nv];
+    // Lateral position from the midline (character's left positive).
+    let leftv = anat.up.cross(anat.forward).normalized();
+    let mid = anat.roles.get("hips").map(|h| sk.head[h[0]].dot(leftv)).unwrap_or(0.0);
+    let lat: Vec<f64> = (0..nv).map(|v| model.rest[v].dot(leftv) - mid).collect();
     for v in 0..nv {
         if model.rigid[v] {
             continue;
@@ -546,10 +555,18 @@ pub fn assess(
             // limb never follows another limb, nor the torso a forearm,
             // hand, shin or foot.
             let core = |g: &Group| matches!(g, Group::Torso | Group::Head);
+            // A torso vertex may follow the first bones of the limb on its
+            // own side (or either, near the midline): a left buttock on the
+            // right thigh is wrong (review 2026-11-13).
+            let same_side = match &gb {
+                Group::Limb(n) if n.ends_with(".L") => lat[v] > -0.02 * h,
+                Group::Limb(n) if n.ends_with(".R") => lat[v] < 0.02 * h,
+                _ => true,
+            };
             let ok = bo == r
                 || gb == *gr
                 || (core(&gb) && core(gr))
-                || (core(gr) && proximal[bo])
+                || (core(gr) && proximal[bo] && same_side)
                 || (core(&gb) && proximal[r])
                 || (core(&gb) && hops.from(r)[bo] <= 1);
             if ok {
@@ -850,7 +867,7 @@ pub fn assess(
         source,
         tears_pct: (tears_area / total_area * 1e4).round() / 100.0 + 0.0,
         tears_verts_pct: (tears_verts as f64 / nv.max(1) as f64 * 1e4).round() / 100.0 + 0.0,
-        through_cm2: ((0..nv).filter(|&v| through[v]).map(|v| varea[v]).sum::<f64>() * k * k * 1e4).round(),
+        through_cm2: ((0..nv).filter(|&v| through[v]).map(|v| varea[v]).sum::<f64>() * k * k * 1e4).round() + 0.0,
         findings,
     }
 }
@@ -962,6 +979,11 @@ pub fn guard(model: &Model, groups: &[(&Ctx, bool)], input: &Weights, output: &W
                 cur[v] = input[v].clone();
             }
         }
+    }
+    // The last round's change is judged too (review 2026-11-13).
+    let tc: Vec<Vec<bool>> = groups.iter().map(|&(c, m)| torn(model, c, &cur, m)).collect();
+    if per_region(&tc).iter().sum::<f64>() > ain.iter().sum::<f64>() + 2.0 {
+        return (input.clone(), vec!["everything (the whole tore more than the input)".into()]);
     }
     let names = (0..nr).filter(|&r| back[r]).map(|r| rctx.regions[r].label.clone()).collect();
     (cur, names)

@@ -673,3 +673,232 @@ pub fn limbs_apart_with(model: &Model, w: &Weights, band_down: f64, band_out: f6
     }
     w
 }
+
+/// An arm, for telling its sleeve from the body it hangs beside.
+pub struct Arm {
+    /// Per joint: in this arm's chain (helpers count with their driver).
+    pub chain: Vec<bool>,
+    /// Per joint: the forearm, the hand and what hangs from them.
+    pub lower: Vec<bool>,
+    /// Shoulder joint, elbow, wrist.
+    pub axis: [Vec3; 3],
+    /// Unit vectors: along the upper arm, across it toward the trunk, and
+    /// the third (forward as near as the arm allows).
+    pub dir: Vec3,
+    pub toward: Vec3,
+    pub fwd: Vec3,
+    /// Length of the upper arm bone.
+    pub len: f64,
+}
+
+pub fn arms_of(model: &Model) -> Vec<Arm> {
+    let sk = &model.skel;
+    let roles = resolve_roles(sk);
+    let first = |r: &str| roles.get(r).and_then(|v| v.first().copied());
+    let under = |root: usize| -> Vec<bool> {
+        (0..model.njoints())
+            .map(|j| {
+                let mut k = Some(crate::helpers::owner(sk, j));
+                while let Some(b) = k {
+                    if b == root {
+                        return true;
+                    }
+                    k = sk.jparent[b];
+                }
+                false
+            })
+            .collect()
+    };
+    let mid = model.rest.iter().fold(0.0, |a, p| a + p.x) / model.nverts().max(1) as f64;
+    let mut out = Vec::new();
+    for side in ["L", "R"] {
+        let (Some(up), Some(fore)) = (first(&format!("upper_arm.{side}")), first(&format!("forearm.{side}"))) else { continue };
+        let wrist = first(&format!("hand.{side}")).map(|h| sk.head[h]).unwrap_or(sk.tail[fore]);
+        let axis = [sk.head[up], sk.head[fore], wrist];
+        let dir = (axis[1] - axis[0]).normalized();
+        let z = Vec3 { x: 0.0, y: 0.0, z: 1.0 };
+        let fwd = (z - dir * z.dot(dir)).normalized();
+        let mut toward = dir.cross(fwd).normalized();
+        if toward.x * (mid - axis[0].x) < 0.0 {
+            toward = -toward;
+        }
+        out.push(Arm { chain: under(up), lower: under(fore), axis, dir, toward, fwd, len: sk.bone_len(up) });
+    }
+    out
+}
+
+/// What a vertex beside or on an arm is, from the outline across the arm
+/// through it. 1: sleeve (the outline goes round the arm's axis and is
+/// the arm alone, or runs on round the trunk and the vertex is on the
+/// arm's side of the waist between). 3: coat (the trunk's side of that
+/// waist). 2: body (a closed outline that does not go round the arm).
+/// 0: not beside the arm (above half way down the upper arm, past the
+/// wrist), or no telling (the arm is sunk in the body with no waist;
+/// with `by_weights` such a vertex goes with the bones it mostly follows).
+pub fn sleeve_labels(model: &Model, arm: &Arm, w: &Weights, by_weights: bool) -> Vec<u8> {
+    let mut sl = Slicer::along(model, arm.dir, arm.toward, arm.fwd);
+    let h: Vec<f64> = arm.axis.iter().map(|p| p.dot(arm.dir)).collect();
+    let axis_at = |y: f64| -> Option<(f64, f64)> {
+        for k in 0..2 {
+            if y >= h[k] && y <= h[k + 1] && h[k + 1] > h[k] {
+                let p = arm.axis[k].lerp(arm.axis[k + 1], (y - h[k]) / (h[k + 1] - h[k]));
+                return Some((p.dot(arm.toward), p.dot(arm.fwd)));
+            }
+        }
+        None
+    };
+    let width = 0.04 * arm.len;
+    (0..model.nverts())
+        .map(|v| {
+            let u = model.rest[v].dot(arm.dir);
+            if u < h[0] + 0.5 * arm.len {
+                return 0;
+            }
+            let Some((pts, closed, y)) = sl.through(v) else { return 0 };
+            let Some(a) = axis_at(y) else { return 0 };
+            if pts.len() < 8 {
+                return 0;
+            }
+            if winding(&pts, closed, a) < ROUND {
+                return if closed { 2 } else { 0 };
+            }
+            // Thickness (front to back) of the outline by distance from the
+            // axis toward the trunk, in steps of `width`.
+            let mut span: std::collections::BTreeMap<i64, (f64, f64)> = std::collections::BTreeMap::new();
+            let n = pts.len();
+            for i in 0..(if closed { n } else { n - 1 }) {
+                let (p, q) = (pts[i], pts[(i + 1) % n]);
+                for s in 0..8 {
+                    let f = s as f64 / 8.0;
+                    let (t, x) = (p.0 + (q.0 - p.0) * f - a.0, p.1 + (q.1 - p.1) * f);
+                    let e = span.entry((t / width).floor() as i64).or_insert((x, x));
+                    e.0 = e.0.min(x);
+                    e.1 = e.1.max(x);
+                }
+            }
+            let thick = |k: i64| span.get(&k).map_or(0.0, |e| e.1 - e.0);
+            let far = *span.keys().next_back().unwrap();
+            if (far as f64) * width < 0.9 * arm.len {
+                return 1; // the arm alone
+            }
+            let lobe = thick(-1).max(thick(0)).max(thick(1));
+            let mut best = 1i64;
+            for k in 2..=far {
+                if thick(k) < thick(best) {
+                    best = k;
+                } else if thick(k) > (1.3 * thick(best)).max(0.5 * lobe) {
+                    break;
+                }
+            }
+            if thick(best) < 0.6 * lobe {
+                let t = model.rest[v].dot(arm.toward) - a.0;
+                return if t < (best as f64 + 0.5) * width { 1 } else { 3 };
+            }
+            if by_weights {
+                let on_arm: f64 = w[v].iter().filter(|e| arm.chain[e.0 as usize]).map(|e| e.1).sum();
+                return if on_arm >= 0.5 { 1 } else { 3 };
+            }
+            0
+        })
+        .collect()
+}
+
+/// Re-weights a sleeve joined to the body, with no cut: sleeve skin
+/// follows its arm's bones only, and the coat it is joined to gives up
+/// what it carries of the forearm and hand (other skin beside the arm is
+/// left alone: a hand's or a cuff's own outline does not go round the
+/// arm's axis either). The join itself stays one
+/// skin, so the edges across its waist take all the stretch.
+pub fn sleeve_weights(model: &Model, w: &Weights, by_weights: bool) -> Weights {
+    let sk = &model.skel;
+    let mut w = w.clone();
+    for arm in arms_of(model) {
+        let labels = sleeve_labels(model, &arm, &w, by_weights);
+        let deform: Vec<bool> = {
+            let mut used = vec![false; model.njoints()];
+            for vw in &w {
+                for &(j, x) in vw {
+                    used[j as usize] |= x > 0.01;
+                }
+            }
+            used
+        };
+        let root = (0..model.njoints()).find(|&j| arm.chain[j] && sk.jparent[j].is_some_and(|p| !arm.chain[p]));
+        let near_parents: Vec<usize> = {
+            let p1 = root.and_then(|r| sk.jparent[r]);
+            let p2 = p1.and_then(|p| sk.jparent[p]);
+            p1.into_iter().chain(p2).collect()
+        };
+        w = (0..model.nverts())
+            .map(|v| {
+                // Which bones go: on a sleeve all but the arm's; on coat and
+                // body the forearm's and hand's.
+                // (The shoulder's blend into the chest is the rig's own: a
+                // sleeve keeps its arm's two nearest ancestors, and nothing
+                // changes above 0.8 of the way down the upper arm.)
+                let goes = |j: u32| match labels[v] {
+                    _ if (model.rest[v] - arm.axis[0]).dot(arm.dir) < 0.8 * arm.len => false,
+                    1 => !arm.chain[j as usize] && !near_parents.contains(&(j as usize)),
+                    3 => arm.lower[j as usize],
+                    _ => false,
+                };
+                let lose: f64 = w[v].iter().filter(|e| goes(e.0)).map(|e| e.1).sum();
+                if lose <= 0.0 {
+                    return w[v].clone();
+                }
+                let keep = 1.0 - lose;
+                let mut out: VW = w[v].iter().filter(|e| !goes(e.0)).copied().collect();
+                if keep >= 0.15 {
+                    out.iter_mut().for_each(|e| e.1 /= keep);
+                } else {
+                    let want_arm = labels[v] == 1;
+                    let near = (0..model.njoints())
+                        .filter(|&j| deform[j] && arm.chain[j] == want_arm && crate::helpers::helper_of(sk, j).is_none())
+                        .min_by(|&a, &b| sk.seg_dist(a, model.rest[v]).total_cmp(&sk.seg_dist(b, model.rest[v])).then(a.cmp(&b)));
+                    match near {
+                        Some(j) => out.push((j as u32, lose)),
+                        None => return w[v].clone(),
+                    }
+                }
+                prune_vw(&normalize_vw(out), 4, 0.01)
+            })
+            .collect();
+    }
+    w
+}
+
+/// The coat under a sleeve follows the body: skin whose nearest bone
+/// through the body (the checker's region) is not an arm's, nor one of
+/// the arm's two nearest ancestors, gives up what it carries of that
+/// arm's forearm and hand. A wide sleeve resting on a coat is rigged as
+/// one skin with it, and forearm weight runs far down the coat's skirt;
+/// that is cloth moving with the wrong bone.
+pub fn coat_weights(model: &Model, ctx: &crate::metrics::Ctx, w: &Weights) -> Weights {
+    let sk = &model.skel;
+    let mut w = w.clone();
+    for arm in arms_of(model) {
+        let root = (0..model.njoints()).find(|&j| arm.chain[j] && sk.jparent[j].is_some_and(|p| !arm.chain[p]));
+        let p1 = root.and_then(|r| sk.jparent[r]);
+        let p2 = p1.and_then(|p| sk.jparent[p]);
+        w = (0..model.nverts())
+            .map(|v| {
+                let Some(region) = ctx.region_bone[ctx.vregion[v] as usize] else { return w[v].clone() };
+                if arm.chain[region] || Some(region) == p1 || Some(region) == p2 {
+                    return w[v].clone();
+                }
+                let lose: f64 = w[v].iter().filter(|e| arm.lower[e.0 as usize]).map(|e| e.1).sum();
+                if lose <= 0.0 {
+                    return w[v].clone();
+                }
+                let mut out: VW = w[v].iter().filter(|e| !arm.lower[e.0 as usize]).copied().collect();
+                if 1.0 - lose >= 0.15 {
+                    out.iter_mut().for_each(|e| e.1 /= 1.0 - lose);
+                } else {
+                    out.push((region as u32, lose));
+                }
+                prune_vw(&normalize_vw(out), 4, 0.01)
+            })
+            .collect();
+    }
+    w
+}

@@ -132,11 +132,59 @@ stretches into a web when the arm lifts. Most rigs' arms are free.
    0.17 -> 0.37 % on the two tried. Pokes do not move (23.4 -> 23.1,
    12.5 -> 12.4). Still not a win: the cuff sinks into the coat with no
    waist beyond the patch, so every cut ends inside skin that is still
-   joined, and a cut that ends there adds a tear at its end. What would
-   work is a cut that follows the sleeve's own edge round the cuff (the
-   crease where sleeve meets coat, not a plane), or the paint's edge
-   where there is no crease. Left in the tool, off by default; a file
-   without an arm record is not touched by the arm weights.
+   joined, and a cut that ends there adds a tear at its end.
+5. **Sleeves re-weighted, no cut** (`unfuse::sleeve_weights`,
+   `unfuse::coat_weights`, `examples/sleeves_try`; dropped). Skin beside
+   an arm is told apart by the outline across the arm through it:
+   sleeve (the outline goes round the arm's axis alone, or the vertex is
+   on the arm's side of the waist), coat (the far side of the waist).
+   Two halves, tried apart, on the legs-cut rigs before the fixer
+   (tears %, legs only -> re-weighted):
+   - *The sleeve follows the forearm* (sleeve skin below 0.8 of the
+     upper arm gives up every bone but its arm's and the arm's two
+     nearest ancestors; the coat it is joined to gives up the forearm
+     and hand): 2.46 -> 3.80, 0.24 -> 0.56, 0.55 -> 0.68 on the three
+     coat rigs; three rigs with free arms unchanged. The join is still
+     one skin, so the whole swing of the arm lands on the edges across
+     its waist. (Two broader versions were far worse and showed why the
+     rule has to be this narrow: stripping from the shoulder down broke
+     the shoulder's own blend, and calling every closed outline that
+     does not go round the arm "body" took the forearm's weight off
+     hands and cuffs: a rig with no arm fault went 58.1 -> 7.6.)
+   - *The coat under it follows the body* (skin whose region, the
+     nearest bone through the body, is not the arm's gives up the
+     forearm and hand): no vertex changes on four of five rigs. On the
+     widest sleeves 2.46 -> 4.32: the belt and pouch stop being dragged
+     up by the arm, which is what the eye objects to most there, but
+     the sleeve's hanging lower half counts as thigh region too (it lies
+     against the thigh), loses its arm and stays at the hip as a larger
+     sheet. Pictures in the owner's folder: the belt held, the sheet
+     bigger.
+6. **Sleeves cut along their own edge** (`sleeves_try --labels
+   --by-weights`, then `unfuse.py --parts arms --labels`; off). The
+   labels of 5, with skin where the cuff is sunk in the coat (no waist)
+   given to sleeve or coat by the bones it mostly follows, mark a closed
+   edge round the whole join; the cut runs along it (not a plane), each
+   side walled, and the weights are put right outward from the rims
+   (4e). Tears %, legs only -> legs and this cut: before the fixer 0.55
+   -> 0.46, 0.24 -> 0.29, 2.46 -> 4.28; after it 0.21 -> 0.21 (score
+   64.8 -> 62.2), 0.17 -> 0.21 (56.8 -> 52.4), 1.78 -> 2.60 (42.7 ->
+   37.5). Pokes fall a little (18.7 -> 18.3, 12.5 -> 12.2, 23.1 ->
+   21.8). Break-even on the two open coats, worse on the widest
+   sleeves, where the picture shows the belt still dragged and the new
+   walls as flat grey facets in the sheet. Not kept. Free arms are left
+   alone (a touch of fewer than 8 triangles is not cut).
+
+   Where this stands: the open coats' sleeve fault is small either way
+   (0.2 % tears). The one figure that matters is the widest-sleeved
+   coat, and its fault is three things at once: the cuff fused into the
+   coat, the sleeve's hanging half lying on the thigh, and forearm
+   weight on the belt and skirt. No single rule here sorts sleeve from
+   coat on it: the waist is missing where the cuff is sunk, the nearest
+   bone through the body says thigh for sleeve cloth, and the rig's own
+   weights are the fault. Its paint does not help either (sleeve and
+   coat are the same black leather). What is left to try is the model
+   sheet: the sleeve's outline in the front and side pictures.
 
 Not tried: a through-the-volume distance prior as a fixer candidate
 (route 2) and transfer from a clean base body (route 4). After the cut
@@ -315,7 +363,7 @@ points for pokes up 1.7, 3.3, 1.8 and 3.1) and the uncut rig on two
 - Crotch: 33 failing vertices on 7 rigs, none above 9 on one rig.
 - Pokes: up 1.7 to 3.6 points on six garment rigs (Tears and pokes). A
   lifted robe half folds into the waist; nothing limits that yet.
-- Sleeves: not solved (Tried, 4). The set's armpit count is 174 after
+- Sleeves: not solved (Tried, 4 to 6). The set's armpit count is 174 after
   the leg cut against 147 before: one long-coat rig whose cuffs are
   joined to the coat's skirt goes 83 -> 117 once the skirt's halves
   follow the legs, and it is the one rig of the hard four still above
